@@ -34,8 +34,7 @@ queues = {} # {server_id: [(vid_file, info), ...]}
 
 def main():
     if TOKEN is None:
-        return ("No token provided. Please create a .env file containing the token.\n"
-                "For more information view the README.md")
+        return ("No token provided. Please create a .env file containing the token.")
     try: bot.run(TOKEN)
     except discord.PrivilegedIntentsRequired as error:
         return error
