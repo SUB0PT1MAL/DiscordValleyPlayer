@@ -1,2 +1,2 @@
-discord.py==2.1.1
-yt_dlp==2023.2.17
+discord.py
+yt_dlp
