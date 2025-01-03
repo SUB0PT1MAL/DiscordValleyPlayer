@@ -17,7 +17,7 @@ TOKEN = os.getenv('BOT_TOKEN')
 PRINT_STACK_TRACE = True
 
 try:
-    COLOR = '16711680'
+    COLOR = int('16711680')
 except ValueError:
     print('the BOT_COLOR in .env is not a valid hex color')
     print('using default color ff0000')
