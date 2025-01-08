@@ -132,16 +132,26 @@ def get_voice_client_from_channel_id(channel_id: int):
 def after_track(error, connection, server_id):
     if error is not None:
         print(error)
-    try: path = queues[server_id].pop(0)[0]
-    except KeyError: return # probably got disconnected
+    try: 
+        path = queues[server_id].pop(0)[0]
+    except KeyError: 
+        return # probably got disconnected
+    
+    # Check if file needs to be removed
     if path not in [i[0] for i in queues[server_id]]: # check that the same video isn't queued multiple times
         try: os.remove(path)
         except FileNotFoundError: pass
-    try: connection.play(discord.FFmpegOpusAudio(queues[server_id][0][0]), after=lambda error=None, connection=connection, server_id=server_id:
-                                                                          after_track(error, connection, server_id))
+    
+    # Play next track if queue isn't empty
+    try: 
+        connection.play(discord.FFmpegOpusAudio(queues[server_id][0][0]), 
+                       after=lambda error=None, connection=connection, server_id=server_id:
+                             after_track(error, connection, server_id))
     except IndexError: # that was the last item in queue
-        queues.pop(server_id) # directory will be deleted on disconnect
-        asyncio.run_coroutine_threadsafe(safe_disconnect(connection), bot.loop).result()
+        queues.pop(server_id) # remove empty queue
+        # Only disconnect if channel is empty
+        if len([m for m in connection.channel.members if not m.bot]) == 0:
+            asyncio.run_coroutine_threadsafe(safe_disconnect(connection), bot.loop).result()
 
 async def safe_disconnect(connection):
     if not connection.is_playing():
