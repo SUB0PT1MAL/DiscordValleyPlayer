@@ -246,26 +246,38 @@ async def play(ctx: commands.Context, *args):
         await ctx.send(f'looking for `{query}`...')
         
         with yt_dlp.YoutubeDL({
-            'format': 'bestaudio[ext=m4a]/bestaudio/best',  # Prefer M4A audio, fallback to best audio
-            'extract_audio': True,  # Extract audio only
+            'format': 'bestaudio[ext=m4a]/bestaudio/best',
+            'extract_audio': True,
             'source_address': '0.0.0.0',
             'default_search': 'ytsearch',
             'outtmpl': '%(id)s.%(ext)s',
-            'noplaylist': False,  # Allow playlists
+            'noplaylist': False,
             'allow_playlist_files': True,
             'extract_flat': False,
-            'paths': {'home': f'./dl/{server_id}'}
+            'paths': {'home': f'./dl/{server_id}'},
+            'ignoreerrors': True  # Don't stop on download errors
         }) as ydl:
-            info = ydl.extract_info(query, download=False)
-            
-            # Handle both single videos and playlists
-            if 'entries' in info:
-                entries = info['entries']
-                await ctx.send(f'Found playlist with {len(entries)} tracks')
-                for entry in entries:
-                    await process_track(ctx, ydl, entry, server_id, connection, will_need_search)
-            else:
-                await process_track(ctx, ydl, info, server_id, connection, will_need_search)
+            try:
+                info = ydl.extract_info(query, download=False)
+                
+                # Handle both single videos and playlists
+                if 'entries' in info:
+                    entries = list(filter(None, info['entries']))  # Remove None entries from failed extractions
+                    await ctx.send(f'Found playlist with {len(entries)} tracks')
+                    
+                    # Process first track immediately
+                    if entries:
+                        first_track = entries.pop(0)
+                        success = await process_track(ctx, ydl, first_track, server_id, connection, will_need_search, is_playlist=True)
+                        
+                        # Process remaining tracks in the background
+                        if entries:
+                            asyncio.create_task(process_playlist_tracks(ctx, ydl, entries, server_id, connection, will_need_search))
+                else:
+                    await process_track(ctx, ydl, info, server_id, connection, will_need_search)
+                    
+            except Exception as e:
+                await ctx.send(f"Failed to process query: {str(e)}")
                 
     except TimeoutError:
         await ctx.send("Failed to connect to voice channel (timeout). Please try again.")
@@ -276,6 +288,13 @@ async def play(ctx: commands.Context, *args):
     except Exception as e:
         await ctx.send(f"An error occurred: {str(e)}")
         print(f"Error in play command: {str(e)}")
+
+async def process_playlist_tracks(ctx, ydl, entries, server_id, connection, will_need_search):
+    """Process remaining playlist tracks in the background"""
+    for entry in entries:
+        if entry:
+            await process_track(ctx, ydl, entry, server_id, connection, will_need_search, is_playlist=True)
+        await asyncio.sleep(0.5)  # Small delay to prevent rate limiting
 
 def get_voice_client_from_channel_id(channel_id: int):
     for voice_client in bot.voice_clients:
@@ -306,30 +325,43 @@ def after_track(error, connection, server_id):
         if len([m for m in connection.channel.members if not m.bot]) == 0:
             asyncio.run_coroutine_threadsafe(safe_disconnect(connection), bot.loop).result()
 
-async def process_track(ctx, ydl, info, server_id, connection, will_need_search):
-    """Thread-safe track processing"""
-    await ctx.send('downloading ' + (f'https://youtu.be/{info["id"]}' if will_need_search else f'`{info["title"]}`'))
-    
-    # Use a lock per guild for downloads
-    with download_locks[server_id]:
-        ydl.download([info['webpage_url'] if 'webpage_url' in info else info['url']])
-    
-    path = f'./dl/{server_id}/{info["id"]}.{info["ext"]}'
-    
-    if server_id not in queues:
-        queues[server_id] = GuildQueue()
-    
-    queue = queues[server_id]
-    queue.append((path, info))
-    
-    if not connection.is_playing():
-        # Ensure first track starts playing
-        first_track = queue[0][0]
-        connection.play(
-            discord.FFmpegOpusAudio(first_track),
-            after=lambda error=None, connection=connection, server_id=server_id:
-                after_track(error, connection, server_id)
-        )
+async def process_track(ctx, ydl, info, server_id, connection, will_need_search, is_playlist=False):
+    """Process a single track with error handling"""
+    try:
+        video_id = info.get('id', 'Unknown')
+        video_title = info.get('title', 'Unknown Title')
+        video_url = f'https://youtu.be/{video_id}' if will_need_search else info.get('webpage_url', '')
+
+        await ctx.send('downloading ' + (video_url if will_need_search else f'`{video_title}`'))
+        
+        with download_locks[server_id]:
+            ydl.download([info['webpage_url'] if 'webpage_url' in info else info['url']])
+        
+        path = f'./dl/{server_id}/{info["id"]}.{info["ext"]}'
+        
+        if server_id not in queues:
+            queues[server_id] = GuildQueue()
+        
+        queue = queues[server_id]
+        queue.append((path, info))
+        
+        # Start playing immediately if this is the first track or not a playlist
+        if not connection.is_playing() and (not is_playlist or len(queue) == 1):
+            first_track = queue[0][0]
+            connection.play(
+                discord.FFmpegOpusAudio(first_track),
+                after=lambda error=None, connection=connection, server_id=server_id:
+                    after_track(error, connection, server_id)
+            )
+            
+    except Exception as e:
+        error_message = str(e)
+        if "copyright grounds" in error_message or "Video unavailable" in error_message:
+            await ctx.send(f"⚠️ Could not download `{video_title}` ({video_url})\nReason: Video is blocked or unavailable in your country.")
+        else:
+            await ctx.send(f"⚠️ Error downloading `{video_title}`: {error_message}")
+        return False
+    return True
 
 def after_track(error, connection, server_id):
     """Thread-safe track completion handling"""
