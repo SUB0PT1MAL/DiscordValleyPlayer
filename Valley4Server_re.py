@@ -91,38 +91,58 @@ async def play(ctx: commands.Context, *args):
         return
 
     query = ' '.join(args)
-    # this is how it's determined if the url is valid (i.e. whether to search or not) under the hood of yt-dlp
     will_need_search = not urllib.parse.urlparse(query).scheme
-
     server_id = ctx.guild.id
 
-    # source address as 0.0.0.0 to force ipv4 because ipv6 breaks it for some reason
-    # this is equivalent to --force-ipv4 (line 312 of https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/options.py)
-    await ctx.send(f'looking for `{query}`...')
-    with yt_dlp.YoutubeDL({'format': 'worstaudio',
-                           'source_address': '0.0.0.0',
-                           'default_search': 'ytsearch',
-                           'outtmpl': '%(id)s.%(ext)s',
-                           'noplaylist': True,
-                           'allow_playlist_files': False,
-                           # 'progress_hooks': [lambda info, ctx=ctx: video_progress_hook(ctx, info)],
-                           # 'match_filter': lambda info, incomplete, will_need_search=will_need_search, ctx=ctx: start_hook(ctx, info, incomplete, will_need_search),
-                           'paths': {'home': f'./dl/{server_id}'}}) as ydl:
-        info = ydl.extract_info(query, download=False)
-        if 'entries' in info:
-            info = info['entries'][0]
-        # send link if it was a search, otherwise send title as sending link again would clutter chat with previews
-        await ctx.send('downloading ' + (f'https://youtu.be/{info["id"]}' if will_need_search else f'`{info["title"]}`'))
-        ydl.download([query])
+    # Try to connect to voice first before downloading
+    try:
+        try: 
+            connection = await voice_state.channel.connect(timeout=60.0)  # Increased timeout
+        except discord.ClientException: 
+            connection = get_voice_client_from_channel_id(voice_state.channel.id)
         
-        path = f'./dl/{server_id}/{info["id"]}.{info["ext"]}'
-        try: queues[server_id].append((path, info))
-        except KeyError: # first in queue
-            queues[server_id] = [(path, info)]
-            try: connection = await voice_state.channel.connect()
-            except discord.ClientException: connection = get_voice_client_from_channel_id(voice_state.channel.id)
-            connection.play(discord.FFmpegOpusAudio(path), after=lambda error=None, connection=connection, server_id=server_id:
-                                                             after_track(error, connection, server_id))
+        if not connection:
+            await ctx.send("Failed to connect to voice channel. Please try again.")
+            return
+            
+        await ctx.send(f'looking for `{query}`...')
+        
+        with yt_dlp.YoutubeDL({
+            'format': 'worstaudio',
+            'source_address': '0.0.0.0',
+            'default_search': 'ytsearch',
+            'outtmpl': '%(id)s.%(ext)s',
+            'noplaylist': True,
+            'allow_playlist_files': False,
+            'paths': {'home': f'./dl/{server_id}'}
+        }) as ydl:
+            info = ydl.extract_info(query, download=False)
+            if 'entries' in info:
+                info = info['entries'][0]
+                
+            await ctx.send('downloading ' + (f'https://youtu.be/{info["id"]}' if will_need_search else f'`{info["title"]}`'))
+            ydl.download([query])
+            
+            path = f'./dl/{server_id}/{info["id"]}.{info["ext"]}'
+            try: 
+                queues[server_id].append((path, info))
+            except KeyError:  # first in queue
+                queues[server_id] = [(path, info)]
+                connection.play(
+                    discord.FFmpegOpusAudio(path), 
+                    after=lambda error=None, connection=connection, server_id=server_id:
+                        after_track(error, connection, server_id)
+                )
+                
+    except TimeoutError:
+        await ctx.send("Failed to connect to voice channel (timeout). Please try again.")
+        try:
+            await connection.disconnect()
+        except:
+            pass
+    except Exception as e:
+        await ctx.send(f"An error occurred: {str(e)}")
+        print(f"Error in play command: {str(e)}")
 
 def get_voice_client_from_channel_id(channel_id: int):
     for voice_client in bot.voice_clients:
@@ -182,11 +202,32 @@ async def on_voice_state_update(member: discord.User, before: discord.VoiceState
         try: shutil.rmtree(f'./dl/{server_id}/')
         except FileNotFoundError: pass
 
+
 @bot.event
 async def on_command_error(event: str, *args, **kwargs):
+    """Improved error handling without relying on external restart script"""
     type_, value, traceback = sys.exc_info()
-    sys.stderr.write(f'{type_}: {value} raised during {event}, {args=}, {kwargs=}')
-    sp.run(['./restart'])
+    error_message = f'{type_}: {value} raised during {event}, {args=}, {kwargs=}'
+    print(error_message)  # Log the error
+    
+    # Handle specific errors
+    if isinstance(value, TimeoutError):
+        # Handle timeout errors specifically
+        channel_id = args[0].channel.id if args and hasattr(args[0], 'channel') else 'Unknown'
+        print(f"Timeout occurred in channel {channel_id}")
+    elif isinstance(value, discord.ClientException):
+        print(f"Discord client exception: {value}")
+    
+    # Don't try to restart, just log the error
+    sys.stderr.write(error_message + '\n')
+
+def get_voice_client_from_channel_id(channel_id: int):
+    """Enhanced voice client getter with additional checks"""
+    for voice_client in bot.voice_clients:
+        if voice_client.channel.id == channel_id:
+            if voice_client.is_connected():
+                return voice_client
+    return None
 
 @bot.event
 async def on_ready():
