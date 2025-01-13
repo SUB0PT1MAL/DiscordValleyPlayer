@@ -45,6 +45,36 @@ class ThreadSafeDict:
     def __contains__(self, key):
         with self._lock:
             return key in self._dict
+            
+    def keys(self):
+        with self._lock:
+            # Return a list instead of a view to avoid threading issues
+            return list(self._dict.keys())
+            
+    def values(self):
+        with self._lock:
+            return list(self._dict.values())
+            
+    def items(self):
+        with self._lock:
+            return list(self._dict.items())
+            
+    def clear(self):
+        with self._lock:
+            self._dict.clear()
+            
+    def copy(self):
+        with self._lock:
+            return self._dict.copy()
+            
+    def __len__(self):
+        with self._lock:
+            return len(self._dict)
+
+    def __iter__(self):
+        with self._lock:
+            # Return a list to avoid threading issues during iteration
+            return iter(list(self._dict))
 
 # queue
 class GuildQueue:
@@ -138,25 +168,33 @@ async def check_idle_voice_clients():
 
 @bot.command(name='valleyqueue', aliases=['q'])
 async def queue(ctx: commands.Context, *args):
-    try: queue = queues[ctx.guild.id]
-    except KeyError: queue = None
-    if queue == None:
-        await ctx.send('the bot isn\'t playing anything')
-    else:
+    try: 
+        if ctx.guild.id not in queues or not queues[ctx.guild.id]:
+            await ctx.send('the bot isn\'t playing anything')
+            return
+        queue = queues[ctx.guild.id]
+        
         title_str = lambda val: '‣ %s\n\n' % val[1] if val[0] == 0 else '**%2d:** %s\n' % val
         queue_str = ''.join(map(title_str, enumerate([i[1]["title"] for i in queue])))
         embedVar = discord.Embed(color=COLOR)
         embedVar.add_field(name='Now playing:', value=queue_str)
         await ctx.send(embed=embedVar)
+        
+    except Exception as e:
+        await ctx.send(f'Error displaying queue: {str(e)}')
+    
     if not await sense_checks(ctx):
         return
 
 @bot.command(name='valleyskip', aliases=['s'])
 async def skip(ctx: commands.Context, *args):
-    try: queue_length = len(queues[ctx.guild.id])
-    except KeyError: queue_length = 0
-    if queue_length <= 0:
+    if ctx.guild.id not in queues or not queues[ctx.guild.id]:
         await ctx.send('the bot isn\'t playing anything')
+        return
+        
+    queue = queues[ctx.guild.id]
+    queue_length = len(queue)
+    
     if not await sense_checks(ctx):
         return
 
@@ -166,6 +204,7 @@ async def skip(ctx: commands.Context, *args):
     except ValueError:
         if args[0] == 'all': n_skips = queue_length
         else: n_skips = 1
+        
     if n_skips == 1:
         message = 'skipping track'
     elif n_skips < queue_length:
@@ -177,7 +216,7 @@ async def skip(ctx: commands.Context, *args):
 
     voice_client = get_voice_client_from_channel_id(ctx.author.voice.channel.id)
     for _ in range(n_skips - 1):
-        queues[ctx.guild.id].pop(0)
+        queue.pop(0)
     voice_client.stop()
 
 @bot.command(name='valley', aliases=['v'])
