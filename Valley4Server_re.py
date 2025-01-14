@@ -221,7 +221,7 @@ async def skip(ctx: commands.Context, *args):
         queue.pop(0)
     voice_client.stop()
 
-bot.command(name='valley', aliases=['v'])
+@bot.command(name='valley', aliases=['v'])
 async def play(ctx: commands.Context, *args):
     """Add track(s) to the download and playback queue."""
     query = ' '.join(args)
