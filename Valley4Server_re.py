@@ -235,15 +235,33 @@ async def play_single(ctx: commands.Context, *args):
         bot.loop.create_task(download_worker(server_id))
 
     try:
-        if "playlist" in query:  # Check if the query is a playlist
-            await ctx.send(f"Processing playlist: `{query}`...")
-            bot.loop.create_task(playlists_worker(ctx, query, server_id, voice_client))
-        else:
-            with yt_dlp.YoutubeDL() as ydl:
+        # Check if input is a URL
+        is_url = query.startswith("http://") or query.startswith("https://")
+
+        if is_url:
+            with yt_dlp.YoutubeDL({"quiet": True, "noplaylist": True}) as ydl:
                 info = ydl.extract_info(query, download=False)
 
-            await download_queues[server_id].put((info, ctx, voice_client))
-            await ctx.send(f"Added `{info['title']}` to the queue.")
+            # Check if the URL is a playlist
+            if "entries" in info:
+                await ctx.send(f"Processing playlist: `{query}`...")
+                bot.loop.create_task(playlists_worker(ctx, query, server_id, voice_client))
+                return
+
+        else:  # Treat as a search query
+            await ctx.send(f"Searching YouTube for `{query}`...")
+            with yt_dlp.YoutubeDL({"quiet": True, "default_search": "ytsearch1"}) as ydl:
+                search_result = ydl.extract_info(query, download=False)
+
+                if "entries" in search_result and search_result["entries"]:
+                    info = search_result["entries"][0]  # Get the first search result
+                else:
+                    await ctx.send("No results found.")
+                    return
+
+        # Add the video or search result to the queue
+        await download_queues[server_id].put((info, ctx, voice_client))
+        await ctx.send(f"Added `{info['title']}` to the queue.")
     except Exception as e:
         await ctx.send(f"Error processing query: {str(e)}")
 
