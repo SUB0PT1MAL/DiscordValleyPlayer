@@ -78,7 +78,12 @@ async def play(ctx, *, query):
 
     await ctx.send(f"Searching for `{query}`...")
     try:
-        ydl_opts = {"format": "bestaudio", "noplaylist": True}
+        ydl_opts = {
+            'format': 'bestaudio[ext=m4a]/bestaudio/best',
+            'paths': {'home': f'./dl/{guild_id}'},
+            'outtmpl': '%(id)s.%(ext)s',
+            'ignoreerrors': True,
+        }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             if "youtu.be" not in query and "www.youtube" not in query:
                 query = f"ytsearch:{query}"
