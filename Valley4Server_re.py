@@ -239,13 +239,17 @@ async def play_single(ctx: commands.Context, *args):
         is_url = query.startswith("http://") or query.startswith("https://")
 
         if is_url:
-            with yt_dlp.YoutubeDL({"quiet": True, "noplaylist": True}) as ydl:
+            with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
                 info = ydl.extract_info(query, download=False)
 
-            # Check if the URL is a playlist
-            if "entries" in info:
+            # Handle playlist URLs
+            if "entries" in info:  # Playlist detected
                 await ctx.send(f"Processing playlist: `{query}`...")
                 bot.loop.create_task(playlists_worker(ctx, query, server_id, voice_client))
+                return
+            else:  # Single video URL
+                await download_queues[server_id].put((info, ctx, voice_client))
+                await ctx.send(f"Added `{info['title']}` to the queue.")
                 return
 
         else:  # Treat as a search query
@@ -259,7 +263,7 @@ async def play_single(ctx: commands.Context, *args):
                     await ctx.send("No results found.")
                     return
 
-        # Add the video or search result to the queue
+        # Add the search result to the queue
         await download_queues[server_id].put((info, ctx, voice_client))
         await ctx.send(f"Added `{info['title']}` to the queue.")
     except Exception as e:
