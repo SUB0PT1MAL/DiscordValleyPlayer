@@ -60,7 +60,7 @@ async def cleanup_guild(guild_id):
     shutil.rmtree(f"./dl/{guild_id}/", ignore_errors=True)
 
 # Bot commands
-@bot.command(name="play", aliases=["p"])
+@bot.command(name="valley", aliases=["v"])
 async def play(ctx, *, query):
     voice_state = ctx.author.voice
     if not voice_state:
@@ -89,7 +89,7 @@ async def play(ctx, *, query):
     except Exception as e:
         await ctx.send(f"Error processing query: {e}")
 
-@bot.command(name="skip")
+@bot.command(name="skip", aliases=["s"])
 async def skip(ctx):
     guild_id = ctx.guild.id
     voice_client = get_voice_client(ctx.guild)
