@@ -60,7 +60,7 @@ async def cleanup_guild(guild_id):
     shutil.rmtree(f"./dl/{guild_id}/", ignore_errors=True)
 
 # Bot commands
-@bot.command(name="valley", aliases=["v"])
+@bot.command(name="play", aliases=["p"])
 async def play(ctx, *, query):
     voice_state = ctx.author.voice
     if not voice_state:
@@ -78,13 +78,18 @@ async def play(ctx, *, query):
 
     await ctx.send(f"Searching for `{query}`...")
     try:
-        with yt_dlp.YoutubeDL({"format": "bestaudio", "noplaylist": True}) as ydl:
+        ydl_opts = {"format": "bestaudio", "noplaylist": True}
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            if "youtu.be" not in query and "www.youtube" not in query:
+                query = f"ytsearch:{query}"
             info = ydl.extract_info(query, download=False)
+            if "entries" in info:  # Handle ytsearch results
+                info = info["entries"][0]
             await download_queues[guild_id].put((info, ctx, voice_client))
     except Exception as e:
         await ctx.send(f"Error processing query: {e}")
 
-@bot.command(name="skip", aliases=["s"])
+@bot.command(name="skip")
 async def skip(ctx):
     guild_id = ctx.guild.id
     voice_client = get_voice_client(ctx.guild)
