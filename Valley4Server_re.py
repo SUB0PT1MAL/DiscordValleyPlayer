@@ -227,7 +227,7 @@ async def play_single(ctx: commands.Context, *args):
         except Exception as e:
             await ctx.send(f"Could not connect to voice channel: {str(e)}")
             return
-    
+
     voice_client = ctx.guild.voice_client
 
     if server_id not in download_queues:
@@ -235,20 +235,24 @@ async def play_single(ctx: commands.Context, *args):
         bot.loop.create_task(download_worker(server_id))
 
     try:
-        await ctx.send(f"Searching for `{query}`...")
-        with yt_dlp.YoutubeDL() as ydl:
-            info = ydl.extract_info(query, download=False)
-            
-            if 'entries' in info:  # Playlist
-                entries = list(filter(None, info['entries']))
-                await ctx.send(f"Processing playlist: {len(entries)} tracks found")
-                for entry in entries:
-                    await download_queues[server_id].put((entry, ctx, voice_client))
-            else:  # Single track
-                await download_queues[server_id].put((info, ctx, voice_client))
-                
+        if not query.startswith("http"):  # Treat as a search query if not a URL
+            await ctx.send(f"Searching YouTube for `{query}`...")
+            with yt_dlp.YoutubeDL({"quiet": True, "default_search": "ytsearch1"}) as ydl:
+                search_result = ydl.extract_info(query, download=False)
+                if "entries" in search_result and search_result["entries"]:
+                    info = search_result["entries"][0]  # Get the first search result
+                else:
+                    await ctx.send("No results found.")
+                    return
+        else:  # Treat as a direct URL
+            with yt_dlp.YoutubeDL() as ydl:
+                info = ydl.extract_info(query, download=False)
+
+        await download_queues[server_id].put((info, ctx, voice_client))
+        await ctx.send(f"Added `{info['title']}` to the queue.")
     except Exception as e:
         await ctx.send(f"Error processing query: {str(e)}")
+
         
 def get_voice_client_from_channel_id(channel_id: int):
     for voice_client in bot.voice_clients:
