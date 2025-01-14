@@ -250,9 +250,13 @@ async def play(ctx: commands.Context, *args):
                         await download_queues[server_id].put((entry, ctx, ctx.guild.voice_client))
             else:  # Single track
                 await download_queues[server_id].put((info, ctx, ctx.guild.voice_client))
-    if server_id not in download_queues:
-        download_queues[server_id] = asyncio.Queue()
-        bot.loop.create_task(download_worker(server_id))
+    try:
+        if server_id not in download_queues:
+            download_queues[server_id] = asyncio.Queue()
+            bot.loop.create_task(process_download_queue(ctx, server_id))
+    except Exception as e:
+        await ctx.send(f"An error occurred while adding to the download queue: {str(e)}")
+
 
     try:
         await ctx.send(f"Searching for `{query}`...")
