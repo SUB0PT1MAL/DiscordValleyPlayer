@@ -326,7 +326,7 @@ async def download_track(ctx, info, guild_id, connection):
         if not connection.is_playing() and len(queue) == 1:
             connection.play(
                 discord.FFmpegOpusAudio(path),
-                after=lambda error=None: after_track_wrapper(error, connection, guild_id)
+                after=lambda error=None: after_track(error, connection, guild_id)
             )
             last_activity[guild_id] = time.time()
             
