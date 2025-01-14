@@ -159,18 +159,21 @@ async def download_track(info, guild_id):
 
 async def play_next_track(voice_client, guild_id, ctx):
     if guild_id not in queues or not queues[guild_id]:
+        print(f"Queue is empty for guild {guild_id}.")
         return
 
     next_track, info = queues[guild_id].pop(0)
     try:
+        print(f"Starting playback: {next_track}")
         voice_client.play(
             discord.FFmpegPCMAudio(next_track),
             after=lambda e: asyncio.run_coroutine_threadsafe(
                 play_next_track(voice_client, guild_id, ctx), bot.loop
-            ) if not e else print(f"Error during playback: {e}")
+            ).result() if not e else print(f"Playback error: {e}")
         )
         await ctx.send(f"Now playing: {info.get('title', 'Unknown')}.")
     except Exception as e:
+        print(f"Failed to play track {next_track}: {e}")
         await ctx.send(f"Failed to play track: {e}")
 
 # Event handlers
