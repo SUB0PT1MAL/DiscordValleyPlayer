@@ -214,7 +214,7 @@ async def skip(ctx: commands.Context, *args):
 
 @bot.command(name='valley', aliases=['v'])
 async def play_single(ctx: commands.Context, *args):
-    """Add a single track to the download and playback queue."""
+    """Add track(s) to the download and playback queue."""
     query = ' '.join(args)
     server_id = ctx.guild.id
     voice_state = ctx.author.voice
@@ -222,7 +222,6 @@ async def play_single(ctx: commands.Context, *args):
     if not await sense_checks(ctx, voice_state=voice_state):
         return
 
-    # Connect to voice channel if not already connected
     if not ctx.guild.voice_client:
         try:
             await voice_state.channel.connect()
@@ -237,65 +236,20 @@ async def play_single(ctx: commands.Context, *args):
         bot.loop.create_task(download_worker(server_id))
 
     try:
-        await ctx.send(f"Searching for `{query}`...")
+        await ctx.send(f"Preparing `{query}`")
         with yt_dlp.YoutubeDL({'default_search': 'ytsearch', 'extract_flat': False}) as ydl:
             info = ydl.extract_info(query, download=False)
-            if 'entries' in info:  # If it's a playlist, just take the first track
-                if info['entries']:
-                    entry = info['entries'][0]
-                    await ctx.send(f"Adding first track from playlist: `{entry.get('title', 'Unknown')}`")
+            
+            if 'entries' in info:  # Playlist
+                entries = list(filter(None, info['entries']))
+                await ctx.send(f"Playlist detected: {len(entries)} tracks found")
+                for entry in entries:
                     await download_queues[server_id].put((entry, ctx, voice_client))
-                else:
-                    await ctx.send("No valid tracks found in the playlist.")
             else:  # Single track
                 await download_queues[server_id].put((info, ctx, voice_client))
+                
     except Exception as e:
         await ctx.send(f"Error processing query: {str(e)}")
-
-@bot.command(name='valleyplaylist', aliases=['vp'])
-async def play_playlist(ctx: commands.Context, *args):
-    """Add all tracks from a YouTube playlist to the download and playback queue."""
-    query = ' '.join(args)
-    server_id = ctx.guild.id
-    voice_state = ctx.author.voice
-
-    if not await sense_checks(ctx, voice_state=voice_state):
-        return
-
-    # Connect to voice channel if not already connected
-    if not ctx.guild.voice_client:
-        try:
-            await voice_state.channel.connect()
-        except Exception as e:
-            await ctx.send(f"Could not connect to voice channel: {str(e)}")
-            return
-    
-    voice_client = ctx.guild.voice_client
-
-    if not ('youtube.com/playlist' in query or 'youtube.com/watch' in query):
-        await ctx.send("Please provide a valid YouTube playlist URL.")
-        return
-
-    if server_id not in download_queues:
-        download_queues[server_id] = asyncio.Queue()
-        bot.loop.create_task(download_worker(server_id))
-
-    try:
-        await ctx.send(f"Processing playlist `{query}`...")
-        with yt_dlp.YoutubeDL({'default_search': 'ytsearch', 'extract_flat': False}) as ydl:
-            info = ydl.extract_info(query, download=False)
-            if 'entries' in info:  # Playlist
-                if info['entries']:
-                    await ctx.send(f"Found playlist with {len(info['entries'])} tracks")
-                    for entry in info['entries']:
-                        if entry:
-                            await download_queues[server_id].put((entry, ctx, voice_client))
-                else:
-                    await ctx.send("No tracks found in the playlist.")
-            else:
-                await ctx.send("The provided URL does not appear to be a playlist.")
-    except Exception as e:
-        await ctx.send(f"Error processing playlist: {str(e)}")
 
 def get_voice_client_from_channel_id(channel_id: int):
     for voice_client in bot.voice_clients:
