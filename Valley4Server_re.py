@@ -302,7 +302,7 @@ def get_voice_client_from_channel_id(channel_id: int):
         if voice_client.channel.id == channel_id:
             return voice_client
 
-def after_track(error, connection, guild_id):
+async def after_track(error, connection, guild_id):
     """Streamlined track completion handler"""
     if error:
         print(f"Playback error in guild {guild_id}: {error}")
