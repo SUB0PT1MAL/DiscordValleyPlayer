@@ -214,7 +214,6 @@ async def skip(ctx: commands.Context, *args):
 
 @bot.command(name='valley', aliases=['v'])
 async def play_single(ctx: commands.Context, *args):
-    """Add track(s) to the download and playback queue."""
     query = ' '.join(args)
     server_id = ctx.guild.id
     voice_state = ctx.author.voice
@@ -236,18 +235,26 @@ async def play_single(ctx: commands.Context, *args):
         bot.loop.create_task(download_worker(server_id))
 
     try:
-        await ctx.send(f"Preparing `{query}`")
-        with yt_dlp.YoutubeDL({'default_search': 'ytsearch', 'extract_flat': False}) as ydl:
-            info = ydl.extract_info(query, download=False)
-            
-            if 'entries' in info:  # Playlist
+        await ctx.send(f"Searching for `{query}`...")
+        ydl_opts = {
+            'extract_flat': False,
+            'default_search': 'ytsearch',
+            'quiet': True,
+            'no_warnings': True
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(query, download=False, process=False)
+            if info.get('_type') == 'url' and info.get('ie_key') == 'Youtube':
+                info = ydl.extract_info(info['url'], download=False)
+            elif info.get('_type') == 'playlist':
                 entries = list(filter(None, info['entries']))
-                await ctx.send(f"Playlist detected: {len(entries)} tracks found")
+                await ctx.send(f"Processing playlist: {len(entries)} tracks found")
                 for entry in entries:
-                    await download_queues[server_id].put((entry, ctx, voice_client))
-            else:  # Single track
-                await download_queues[server_id].put((info, ctx, voice_client))
-                
+                    processed_entry = ydl.extract_info(entry['url'], download=False)
+                    await download_queues[server_id].put((processed_entry, ctx, voice_client))
+                return
+            await download_queues[server_id].put((info, ctx, voice_client))
+
     except Exception as e:
         await ctx.send(f"Error processing query: {str(e)}")
 
@@ -300,19 +307,20 @@ async def download_worker(guild_id):
         queue.task_done()
 
 async def download_track(ctx, info, guild_id, connection):
-    """Download and queue a track with comprehensive error handling"""
     try:
         video_title = info.get('title', 'Unknown Title')
-        with yt_dlp.YoutubeDL({
+        ydl_opts = {
             'format': 'bestaudio[ext=m4a]/bestaudio/best',
             'paths': {'home': f'./dl/{guild_id}'},
             'outtmpl': '%(id)s.%(ext)s',
-            'ignoreerrors': True,
-        }) as ydl:
-            with download_locks[guild_id]:
-                ydl.download([info.get('webpage_url', info.get('url'))])
+            'quiet': True,
+            'no_warnings': True
+        }
         
-        # Find downloaded file
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            with download_locks[guild_id]:
+                ydl.download([info['url']])
+        
         video_id = info['id']
         downloaded_files = glob.glob(f"./dl/{guild_id}/{video_id}.*")
         if not downloaded_files:
@@ -320,17 +328,15 @@ async def download_track(ctx, info, guild_id, connection):
         
         path = downloaded_files[0]
         
-        # Initialize queue if needed
         if guild_id not in queues:
             queues[guild_id] = GuildQueue()
         
-        # Add to queue and play if first track
         queue = queues[guild_id]
         queue.append((path, info))
         if not connection.is_playing() and len(queue) == 1:
             connection.play(
                 discord.FFmpegOpusAudio(path),
-                after=lambda error=None: after_track(error, connection, guild_id)
+                after=lambda error=None: after_track_wrapper(error, connection, guild_id)
             )
             last_activity[guild_id] = time.time()
             
