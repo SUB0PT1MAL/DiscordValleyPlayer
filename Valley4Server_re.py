@@ -1,186 +1,559 @@
+#!/usr/bin/env python3.10
+
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 import yt_dlp
+import urllib
 import asyncio
+import threading
 import os
 import shutil
+import sys
 import time
-from collections import defaultdict
+import glob
 from threading import Lock
+from collections import defaultdict
+#from dotenv import load_dotenv
 
-# Configuration
-TOKEN = os.getenv("BOT_TOKEN")
-PREFIX = "!"
-COLOR = 0xFF0000  # Default bot color
-IDLE_TIMEOUT = 300  # 5 minutes
+# Setting up thread safe dictionaries and queues
 
-# Intents and bot setup
-intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix=PREFIX, intents=intents)
-
-# Thread-safe data structures
-class ThreadSafeDict(defaultdict):
+# dictionaries
+class ThreadSafeDict:
     def __init__(self):
-        super().__init__(dict)
+        self._dict = {}
         self._lock = Lock()
-
+    
     def __getitem__(self, key):
         with self._lock:
-            return super().__getitem__(key)
-
+            return self._dict[key]
+    
     def __setitem__(self, key, value):
         with self._lock:
-            super().__setitem__(key, value)
-
+            self._dict[key] = value
+    
+    def __delitem__(self, key):
+        with self._lock:
+            del self._dict[key]
+    
     def pop(self, key, default=None):
         with self._lock:
-            return super().pop(key, default)
+            return self._dict.pop(key, default)
+    
+    def get(self, key, default=None):
+        with self._lock:
+            return self._dict.get(key, default)
+    
+    def __contains__(self, key):
+        with self._lock:
+            return key in self._dict
+            
+    def keys(self):
+        with self._lock:
+            # Return a list instead of a view to avoid threading issues
+            return list(self._dict.keys())
+            
+    def values(self):
+        with self._lock:
+            return list(self._dict.values())
+            
+    def items(self):
+        with self._lock:
+            return list(self._dict.items())
+            
+    def clear(self):
+        with self._lock:
+            self._dict.clear()
+            
+    def copy(self):
+        with self._lock:
+            return self._dict.copy()
+            
+    def __len__(self):
+        with self._lock:
+            return len(self._dict)
 
-# Global queues and locks
-queues = ThreadSafeDict()  # {guild_id: [(file_path, metadata)]}
-last_activity = ThreadSafeDict()  # {guild_id: last_active_timestamp}
-download_locks = defaultdict(Lock)
+    def __iter__(self):
+        with self._lock:
+            # Return a list to avoid threading issues during iteration
+            return iter(list(self._dict))
+
+# queue
+class GuildQueue:
+    def __init__(self):
+        self.queue = []
+        self.lock = Lock()
+    
+    def append(self, item):
+        with self.lock:
+            self.queue.append(item)
+    
+    def pop(self, index=0):
+        with self.lock:
+            if self.queue:
+                return self.queue.pop(index)
+            raise IndexError("pop from empty queue")
+    
+    def __len__(self):
+        with self.lock:
+            return len(self.queue)
+    
+    def __getitem__(self, index):
+        with self.lock:
+            return self.queue[index]
+    
+    def __bool__(self):
+        with self.lock:
+            return bool(self.queue)
+
+# Initializing thread safe dictionaries and queues
+queues = ThreadSafeDict()  # {server_id: GuildQueue()}
+last_activity = ThreadSafeDict()  # {guild_id: timestamp}
+download_locks = defaultdict(Lock)  # {guild_id: Lock()}
 download_queues = ThreadSafeDict()  # {guild_id: asyncio.Queue()}
 
-# Utility functions
-def get_voice_client(guild):
-    return discord.utils.get(bot.voice_clients, guild=guild)
+#load_dotenv()
+TOKEN = os.getenv('BOT_TOKEN')
+PRINT_STACK_TRACE = True
 
-async def safe_disconnect(voice_client):
-    if voice_client and voice_client.is_connected():
-        await voice_client.disconnect()
+try:
+    COLOR = int('16711680')
+except ValueError:
+    print('the BOT_COLOR in .env is not a valid hex color')
+    print('using default color ff0000')
+    COLOR = 0xff0000
 
-async def cleanup_guild(guild_id):
+intents = discord.Intents.default()
+intents.members = True
+intents.guilds = True
+intents.messages = True
+intents.message_content = True
+
+bot = commands.Bot(command_prefix='!', intents=intents)
+
+def main():
+    if TOKEN is None:
+        return ("No token provided. Please create a .env file containing the token.")
+    try: bot.run(TOKEN)
+    except discord.PrivilegedIntentsRequired as error:
+        return error
+
+async def check_idle_voice_clients():
+    """Improved idle checker with consolidated disconnect logic"""
+    while True:
+        current_time = time.time()
+        for voice_client in bot.voice_clients:
+            guild_id = voice_client.guild.id
+            
+            # Check for empty channel
+            member_count = len([m for m in voice_client.channel.members if not m.bot])
+            if member_count == 0:
+                await safe_cleanup(guild_id, voice_client)
+                continue
+            
+            # Check for idle timeout
+            if guild_id in last_activity:
+                idle_time = current_time - last_activity[guild_id]
+                if idle_time > 300 and not voice_client.is_playing():
+                    if guild_id not in queues or not queues[guild_id]:
+                        await safe_cleanup(guild_id, voice_client)
+        
+        await asyncio.sleep(30)
+
+@bot.command(name='valleyqueue', aliases=['q'])
+async def queue(ctx: commands.Context, *args):
+    try: 
+        if ctx.guild.id not in queues or not queues[ctx.guild.id]:
+            await ctx.send('the bot isn\'t playing anything')
+            return
+        queue = queues[ctx.guild.id]
+        
+        title_str = lambda val: '‣ %s\n\n' % val[1] if val[0] == 0 else '**%2d:** %s\n' % val
+        queue_str = ''.join(map(title_str, enumerate([i[1]["title"] for i in queue])))
+        embedVar = discord.Embed(color=COLOR)
+        embedVar.add_field(name='Now playing:', value=queue_str)
+        await ctx.send(embed=embedVar)
+        
+    except Exception as e:
+        await ctx.send(f'Error displaying queue: {str(e)}')
+    
+    if not await sense_checks(ctx):
+        return
+
+@bot.command(name='valleyskip', aliases=['s'])
+async def skip(ctx: commands.Context, *args):
+    if ctx.guild.id not in queues or not queues[ctx.guild.id]:
+        await ctx.send('the bot isn\'t playing anything')
+        return
+        
+    queue = queues[ctx.guild.id]
+    queue_length = len(queue)
+    
+    if not await sense_checks(ctx):
+        return
+
+    try: n_skips = int(args[0])
+    except IndexError:
+        n_skips = 1
+    except ValueError:
+        if args[0] == 'all': n_skips = queue_length
+        else: n_skips = 1
+        
+    if n_skips == 1:
+        message = 'skipping track'
+    elif n_skips < queue_length:
+        message = f'skipping `{n_skips}` of `{queue_length}` tracks'
+    else:
+        message = 'skipping all tracks'
+        n_skips = queue_length
+    await ctx.send(message)
+
+    voice_client = get_voice_client_from_channel_id(ctx.author.voice.channel.id)
+    for _ in range(n_skips - 1):
+        queue.pop(0)
+    voice_client.stop()
+
+@bot.command(name='valley', aliases=['v'])
+async def play_single(ctx: commands.Context, *args):
+    """Add a single track to the download and playback queue."""
+    query = ' '.join(args)
+    server_id = ctx.guild.id
+    voice_state = ctx.author.voice
+
+    if not await sense_checks(ctx, voice_state=voice_state):
+        return
+
+    # Connect to voice channel if not already connected
+    if not ctx.guild.voice_client:
+        try:
+            await voice_state.channel.connect()
+        except Exception as e:
+            await ctx.send(f"Could not connect to voice channel: {str(e)}")
+            return
+    
+    voice_client = ctx.guild.voice_client
+
+    if server_id not in download_queues:
+        download_queues[server_id] = asyncio.Queue()
+        bot.loop.create_task(download_worker(server_id))
+
+    try:
+        await ctx.send(f"Searching for `{query}`...")
+        with yt_dlp.YoutubeDL({'default_search': 'ytsearch', 'extract_flat': False}) as ydl:
+            info = ydl.extract_info(query, download=False)
+            if 'entries' in info:  # If it's a playlist, just take the first track
+                if info['entries']:
+                    entry = info['entries'][0]
+                    await ctx.send(f"Adding first track from playlist: `{entry.get('title', 'Unknown')}`")
+                    await download_queues[server_id].put((entry, ctx, voice_client))
+                else:
+                    await ctx.send("No valid tracks found in the playlist.")
+            else:  # Single track
+                await download_queues[server_id].put((info, ctx, voice_client))
+    except Exception as e:
+        await ctx.send(f"Error processing query: {str(e)}")
+
+@bot.command(name='valleyplaylist', aliases=['vp'])
+async def play_playlist(ctx: commands.Context, *args):
+    """Add all tracks from a YouTube playlist to the download and playback queue."""
+    query = ' '.join(args)
+    server_id = ctx.guild.id
+    voice_state = ctx.author.voice
+
+    if not await sense_checks(ctx, voice_state=voice_state):
+        return
+
+    # Connect to voice channel if not already connected
+    if not ctx.guild.voice_client:
+        try:
+            await voice_state.channel.connect()
+        except Exception as e:
+            await ctx.send(f"Could not connect to voice channel: {str(e)}")
+            return
+    
+    voice_client = ctx.guild.voice_client
+
+    if not ('youtube.com/playlist' in query or 'youtube.com/watch' in query):
+        await ctx.send("Please provide a valid YouTube playlist URL.")
+        return
+
+    if server_id not in download_queues:
+        download_queues[server_id] = asyncio.Queue()
+        bot.loop.create_task(download_worker(server_id))
+
+    try:
+        await ctx.send(f"Processing playlist `{query}`...")
+        with yt_dlp.YoutubeDL({'default_search': 'ytsearch', 'extract_flat': False}) as ydl:
+            info = ydl.extract_info(query, download=False)
+            if 'entries' in info:  # Playlist
+                if info['entries']:
+                    await ctx.send(f"Found playlist with {len(info['entries'])} tracks")
+                    for entry in info['entries']:
+                        if entry:
+                            await download_queues[server_id].put((entry, ctx, voice_client))
+                else:
+                    await ctx.send("No tracks found in the playlist.")
+            else:
+                await ctx.send("The provided URL does not appear to be a playlist.")
+    except Exception as e:
+        await ctx.send(f"Error processing playlist: {str(e)}")
+
+def get_voice_client_from_channel_id(channel_id: int):
+    for voice_client in bot.voice_clients:
+        if voice_client.channel.id == channel_id:
+            return voice_client
+
+def after_track(error, connection, guild_id):
+    """Streamlined track completion handler"""
+    if error:
+        print(f"Playback error in guild {guild_id}: {error}")
+        return
+        
+    try:
+        queue = queues[guild_id]
+        path = queue.pop(0)[0]
+        
+        # Cleanup file if not needed
+        with download_locks[guild_id]:
+            if not any(path == track[0] for track in queue):
+                try: os.remove(path)
+                except FileNotFoundError: pass
+        
+        last_activity[guild_id] = time.time()
+        
+        # Play next or cleanup
+        if queue:
+            connection.play(
+                discord.FFmpegOpusAudio(queue[0][0]),
+                after=lambda error=None: after_track(error, connection, guild_id)
+            )
+        else:
+            await safe_cleanup(guild_id)
+            
+    except Exception as e:
+        print(f"Queue handling error: {e}")
+
+async def download_worker(guild_id):
+    """Worker to handle downloading for a specific guild."""
+    queue = download_queues[guild_id]
+    while True:
+        track_info, ctx, connection = await queue.get()  # Get the next track to download
+        if track_info is None:  # Sentinel value to stop the worker
+            break
+        try:
+            await download_track(ctx, track_info, guild_id, connection)
+        except Exception as e:
+            await ctx.send(f"Failed to download track: {str(e)}")
+        queue.task_done()
+
+async def download_track(ctx, info, guild_id, connection):
+    """Download and queue a track with comprehensive error handling"""
+    try:
+        video_title = info.get('title', 'Unknown Title')
+        with yt_dlp.YoutubeDL({
+            'format': 'bestaudio[ext=m4a]/bestaudio/best',
+            'paths': {'home': f'./dl/{guild_id}'},
+            'outtmpl': '%(id)s.%(ext)s',
+            'ignoreerrors': True,
+        }) as ydl:
+            with download_locks[guild_id]:
+                ydl.download([info.get('webpage_url', info.get('url'))])
+        
+        # Find downloaded file
+        video_id = info['id']
+        downloaded_files = glob.glob(f"./dl/{guild_id}/{video_id}.*")
+        if not downloaded_files:
+            raise FileNotFoundError(f"Download failed for {video_title}")
+        
+        path = downloaded_files[0]
+        
+        # Initialize queue if needed
+        if guild_id not in queues:
+            queues[guild_id] = GuildQueue()
+        
+        # Add to queue and play if first track
+        queue = queues[guild_id]
+        queue.append((path, info))
+        if not connection.is_playing() and len(queue) == 1:
+            connection.play(
+                discord.FFmpegOpusAudio(path),
+                after=lambda error=None: after_track(error, connection, guild_id)
+            )
+            last_activity[guild_id] = time.time()
+            
+    except Exception as e:
+        error_msg = str(e)
+        if any(x in error_msg.lower() for x in ["copyright", "unavailable", "blocked"]):
+            await ctx.send(f"⚠️ Cannot play `{video_title}`: Video is blocked or unavailable.")
+        else:
+            await ctx.send(f"⚠️ Error processing `{video_title}`: {error_msg}")
+        return False
+    return True
+
+async def safe_cleanup(guild_id, voice_client=None):
+    """Centralized cleanup function"""
     if guild_id in queues:
         queues.pop(guild_id)
+    
+    with download_locks[guild_id]:
+        shutil.rmtree(f'./dl/{guild_id}/', ignore_errors=True)
+    
+    if voice_client and voice_client.is_connected():
+        await voice_client.disconnect()
+    
+    await cleanup_download_queue(guild_id)
+
+async def cleanup_download_queue(guild_id):
+    """Stop and clean up the download queue for a guild."""
     if guild_id in download_queues:
         queue = download_queues.pop(guild_id)
         await queue.put(None)
-    shutil.rmtree(f"./dl/{guild_id}/", ignore_errors=True)
 
-# Bot commands
-@bot.command(name="valley", aliases=["v"])
-async def play(ctx, *, query):
-    voice_state = ctx.author.voice
-    if not voice_state:
-        return await ctx.send("You need to be in a voice channel to use this command.")
-
-    if not ctx.guild.voice_client:
-        await voice_state.channel.connect()
-
-    voice_client = ctx.guild.voice_client
-    guild_id = ctx.guild.id
-
-    if guild_id not in download_queues:
-        download_queues[guild_id] = asyncio.Queue()
-        bot.loop.create_task(download_worker(guild_id))
-
-    await ctx.send(f"Searching for `{query}`...")
+async def process_track(ctx, ydl, info, server_id, connection, will_need_search, is_playlist=False):
+    """Process a single track with error handling"""
     try:
-        ydl_opts = {
-            'format': 'bestaudio[ext=m4a]/bestaudio/best',
-            'paths': {'home': f'./dl/{guild_id}'},
-            'outtmpl': '%(id)s.%(ext)s',
-            'ignoreerrors': True,
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            if "youtu.be" not in query and "www.youtube" not in query:
-                query = f"ytsearch:{query}"
-            info = ydl.extract_info(query, download=False)
-            if "entries" in info:  # Handle ytsearch results
-                info = info["entries"][0]
-            await download_queues[guild_id].put((info, ctx, voice_client))
+        video_id = info.get('id', 'Unknown')
+        video_title = info.get('title', 'Unknown Title')
+        video_url = f'https://youtu.be/{video_id}' if will_need_search else info.get('webpage_url', '')
+
+        await ctx.send('downloading ' + (video_url if will_need_search else f'`{video_title}`'))
+        
+        with download_locks[server_id]:
+            ydl.download([info['webpage_url'] if 'webpage_url' in info else info['url']])
+        
+        path = f'./dl/{server_id}/{info["id"]}.{info["ext"]}'
+        
+        if server_id not in queues:
+            queues[server_id] = GuildQueue()
+        
+        queue = queues[server_id]
+        queue.append((path, info))
+        
+        # Start playing immediately if this is the first track or not a playlist
+        if not connection.is_playing() and (not is_playlist or len(queue) == 1):
+            first_track = queue[0][0]
+            connection.play(
+                discord.FFmpegOpusAudio(first_track),
+                after=lambda error=None, connection=connection, server_id=server_id:
+                    after_track(error, connection, server_id)
+            )
+            
     except Exception as e:
-        await ctx.send(f"Error processing query: {e}")
+        error_message = str(e)
+        if "copyright grounds" in error_message or "Video unavailable" in error_message:
+            await ctx.send(f"⚠️ Could not download `{video_title}` ({video_url})\nReason: Video is blocked or unavailable in your country.")
+        else:
+            await ctx.send(f"⚠️ Error downloading `{video_title}`: {error_message}")
+        return False
+    return True
 
-@bot.command(name="skip", aliases=["s"])
-async def skip(ctx):
-    guild_id = ctx.guild.id
-    voice_client = get_voice_client(ctx.guild)
-    if not voice_client or not voice_client.is_playing():
-        return await ctx.send("No track is currently playing.")
-
-    voice_client.stop()
-    await ctx.send("Skipped the current track.")
-
-@bot.command(name="queue", aliases=["q"])
-async def show_queue(ctx):
-    guild_id = ctx.guild.id
-    if guild_id not in queues or not queues[guild_id]:
-        return await ctx.send("The queue is empty.")
-
-    queue_list = [f"**{i+1}.** {track[1].get('title', 'Unknown')}" for i, track in enumerate(queues[guild_id])]
-    embed = discord.Embed(title="Queue", description="\n".join(queue_list), color=COLOR)
-    await ctx.send(embed=embed)
-
-# Background tasks
-@tasks.loop(seconds=30)
-async def idle_checker():
-    current_time = time.time()
-    for voice_client in bot.voice_clients:
-        guild_id = voice_client.guild.id
-        if guild_id in last_activity:
-            idle_time = current_time - last_activity[guild_id]
-            if idle_time > IDLE_TIMEOUT and not voice_client.is_playing():
-                await safe_disconnect(voice_client)
-                await cleanup_guild(guild_id)
-
-async def download_worker(guild_id):
-    queue = download_queues[guild_id]
-    while True:
-        task = await queue.get()
-        if task is None:
-            break
-
-        info, ctx, voice_client = task
-        try:
-            file_path = await download_track(info, guild_id)
-            if guild_id not in queues:
-                queues[guild_id] = []
-
-            queues[guild_id].append((file_path, info))
-            if not voice_client.is_playing():
-                await play_next_track(voice_client, guild_id, ctx)
-        except Exception as e:
-            await ctx.send(f"Failed to process track: {e}")
-
-async def download_track(info, guild_id):
-    ydl_opts = {
-            'format': 'bestaudio[ext=m4a]/bestaudio/best',
-            'paths': {'home': f'./dl/{guild_id}'},
-            'outtmpl': '%(id)s.%(ext)s',
-            'ignoreerrors': True,
-    }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([info["webpage_url"]])
-
-    return f"./dl/{guild_id}/{info['id']}.m4a"
-
-async def play_next_track(voice_client, guild_id, ctx):
-    if guild_id not in queues or not queues[guild_id]:
-        print(f"Queue is empty for guild {guild_id}.")
+def after_track(error, connection, server_id):
+    """Thread-safe track completion handling"""
+    if error is not None:
+        print(f"Error in guild {server_id}: {error}")
         return
-
-    next_track, info = queues[guild_id].pop(0)
+        
     try:
-        print(f"Starting playback: {next_track}")
-        voice_client.play(
-            discord.FFmpegPCMAudio(next_track),
-            after=lambda e: asyncio.run_coroutine_threadsafe(
-                play_next_track(voice_client, guild_id, ctx), bot.loop
-            ).result() if not e else print(f"Playback error: {e}")
-        )
-        await ctx.send(f"Now playing: {info.get('title', 'Unknown')}.")
-    except Exception as e:
-        print(f"Failed to play track {next_track}: {e}")
-        await ctx.send(f"Failed to play track: {e}")
+        queue = queues[server_id]
+        path = queue.pop(0)[0]  # Changed from pop() to pop(0) for consistency
+        
+        # Thread-safe file cleanup
+        with download_locks[server_id]:
+            if not any(path == track[0] for track in queue):
+                try:
+                    os.remove(path)
+                except FileNotFoundError:
+                    pass
+        
+        # Update activity timestamp
+        last_activity[server_id] = time.time()
+        
+        # Play next track if available
+        if queue:
+            next_track = queue[0][0]
+            try:
+                connection.play(
+                    discord.FFmpegOpusAudio(next_track),
+                    after=lambda error=None: after_track(error, connection, server_id)
+                )
+            except Exception as e:
+                print(f"Error playing next track: {e}")
+        else:
+            queues.pop(server_id)
+            
+    except (IndexError, KeyError) as e:
+        print(f"Queue error: {e}")
+        # Queue is empty or guild was removed
+        pass
 
-# Event handlers
+async def safe_disconnect(connection):
+    if not connection.is_playing():
+        await connection.disconnect()
+        
+async def sense_checks(ctx: commands.Context, voice_state=None) -> bool:
+    if voice_state is None: voice_state = ctx.author.voice 
+    if voice_state is None:
+        await ctx.send('you have to be in a vc to use this command')
+        return False
+
+    if bot.user.id not in [member.id for member in ctx.author.voice.channel.members] and ctx.guild.id in queues.keys():
+        await ctx.send('you have to be in the same vc as the bot to use this command')
+        return False
+    return True
+
+@bot.event
+async def on_voice_state_update(member: discord.User, before: discord.VoiceState, after: discord.VoiceState):
+    if member != bot.user:
+        return
+    if before.channel is None and after.channel is not None: # joined vc
+        return
+    if before.channel is not None and after.channel is None: # disconnected from vc
+        # clean up
+        server_id = before.channel.guild.id
+        try: queues.pop(server_id)
+        except KeyError: pass
+        try: shutil.rmtree(f'./dl/{server_id}/')
+        except FileNotFoundError: pass
+
+
+@bot.event
+async def on_command_error(event: str, *args, **kwargs):
+    """Improved error handling without relying on external restart script"""
+    type_, value, traceback = sys.exc_info()
+    error_message = f'{type_}: {value} raised during {event}, {args=}, {kwargs=}'
+    print(error_message)  # Log the error
+    
+    # Handle specific errors
+    if isinstance(value, TimeoutError):
+        # Handle timeout errors specifically
+        channel_id = args[0].channel.id if args and hasattr(args[0], 'channel') else 'Unknown'
+        print(f"Timeout occurred in channel {channel_id}")
+    elif isinstance(value, discord.ClientException):
+        print(f"Discord client exception: {value}")
+    
+    # Don't try to restart, just log the error
+    sys.stderr.write(error_message + '\n')
+
+def get_voice_client_from_channel_id(channel_id: int):
+    """Enhanced voice client getter with additional checks"""
+    for voice_client in bot.voice_clients:
+        if voice_client.channel.id == channel_id:
+            if voice_client.is_connected():
+                return voice_client
+    return None
+
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user.name}")
-    idle_checker.start()
+    print(f'logged in successfully as {bot.user.name}')
+    print("stack trace: ", PRINT_STACK_TRACE)
+    print("bot color: ", COLOR)
+    # Start the idle checker
+    bot.loop.create_task(check_idle_voice_clients())
 
-if __name__ == "__main__":
-    bot.run(TOKEN)
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except SystemError as error:
+        if PRINT_STACK_TRACE:
+            raise
+        else:
+            print(error)
