@@ -286,36 +286,54 @@ async def after_track(error, connection, guild_id):
         print(f"Queue handling error: {e}")
 
 async def download_worker(guild_id):
-    """Worker to handle downloading for a specific guild."""
     queue = download_queues[guild_id]
     while True:
-        track_info, ctx, connection = await queue.get()  # Get the next track to download
-        if track_info is None:  # Sentinel value to stop the worker
-            break
         try:
-            await download_track(ctx, track_info, guild_id, connection)
+            track_info, ctx, connection = await asyncio.wait_for(queue.get(), timeout=30)
+            if track_info is None:
+                break
+                
+            try:
+                await download_track(ctx, track_info, guild_id, connection)
+            except Exception as e:
+                await ctx.send(f"⚠️ Skipping unavailable track: {track_info.get('title', 'Unknown')}")
+                print(f"Download error: {e}")
+            finally:
+                queue.task_done()
+                
+        except asyncio.TimeoutError:
+            print(f"Download worker timeout for guild {guild_id}")
+            break
         except Exception as e:
-            await ctx.send(f"Failed to download track: {str(e)}")
-        queue.task_done()
+            print(f"Download worker error: {e}")
+            continue
 
 async def download_track(ctx, info, guild_id, connection):
     try:
         video_title = info.get('title', 'Unknown Title')
         webpage_url = info.get('webpage_url', info.get('url', ''))
         
-        with yt_dlp.YoutubeDL({
-            'format': 'bestaudio[ext=m4a]/bestaudio/best',
-            'paths': {'home': f'./dl/{guild_id}'},
-            'outtmpl': '%(id)s.%(ext)s'
-        }) as ydl:
-            with download_locks[guild_id]:
-                ydl.download([webpage_url])
-        
+        async def download_with_timeout():
+            with yt_dlp.YoutubeDL({
+                'format': 'bestaudio[ext=m4a]/bestaudio/best',
+                'paths': {'home': f'./dl/{guild_id}'},
+                'outtmpl': '%(id)s.%(ext)s'
+            }) as ydl:
+                with download_locks[guild_id]:
+                    return await asyncio.get_event_loop().run_in_executor(
+                        None, ydl.download, [webpage_url]
+                    )
+                    
+        try:
+            await asyncio.wait_for(download_with_timeout(), timeout=60)
+        except asyncio.TimeoutError:
+            raise Exception("Download timed out")
+
         video_id = info['id']
         downloaded_files = glob.glob(f"./dl/{guild_id}/{video_id}.*")
         if not downloaded_files:
             raise FileNotFoundError(f"Download failed for {video_title}")
-        
+            
         path = downloaded_files[0]
         
         if guild_id not in queues:
@@ -326,17 +344,12 @@ async def download_track(ctx, info, guild_id, connection):
         if not connection.is_playing() and len(queue) == 1:
             connection.play(
                 discord.FFmpegOpusAudio(path),
-                after=lambda error=None: after_track(error, connection, guild_id)
+                after=lambda error=None: after_track_wrapper(error, connection, guild_id)
             )
             last_activity[guild_id] = time.time()
             
     except Exception as e:
-        error_msg = str(e)
-        if any(x in error_msg.lower() for x in ["copyright", "unavailable", "blocked"]):
-            await ctx.send(f"⚠️ Cannot play `{video_title}`: Video is blocked or unavailable.")
-        else:
-            await ctx.send(f"⚠️ Error processing `{video_title}`: {error_msg}")
-        return False
+        raise e
     return True
 
 async def safe_cleanup(guild_id, voice_client=None):
