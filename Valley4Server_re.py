@@ -147,8 +147,10 @@ async def download_worker(guild_id):
 
 async def download_track(info, guild_id):
     ydl_opts = {
-        "format": "bestaudio",
-        "outtmpl": f"./dl/{guild_id}/%(id)s.%(ext)s",
+            'format': 'bestaudio[ext=m4a]/bestaudio/best',
+            'paths': {'home': f'./dl/{guild_id}'},
+            'outtmpl': '%(id)s.%(ext)s',
+            'ignoreerrors': True,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([info["webpage_url"]])
