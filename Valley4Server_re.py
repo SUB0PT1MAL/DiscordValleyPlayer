@@ -239,25 +239,20 @@ async def play_single(ctx: commands.Context, *args):
         ydl_opts = {
             'extract_flat': False,
             'default_search': 'ytsearch',
-            'quiet': True,
-            'no_warnings': True
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(query, download=False, process=False)
-            if info.get('_type') == 'url' and info.get('ie_key') == 'Youtube':
-                info = ydl.extract_info(info['url'], download=False)
-            elif info.get('_type') == 'playlist':
+            info = ydl.extract_info(query, download=False)
+            if 'entries' in info:
                 entries = list(filter(None, info['entries']))
                 await ctx.send(f"Processing playlist: {len(entries)} tracks found")
                 for entry in entries:
-                    processed_entry = ydl.extract_info(entry['url'], download=False)
-                    await download_queues[server_id].put((processed_entry, ctx, voice_client))
+                    await download_queues[server_id].put((entry, ctx, voice_client))
                 return
             await download_queues[server_id].put((info, ctx, voice_client))
 
     except Exception as e:
         await ctx.send(f"Error processing query: {str(e)}")
-
+        
 def get_voice_client_from_channel_id(channel_id: int):
     for voice_client in bot.voice_clients:
         if voice_client.channel.id == channel_id:
