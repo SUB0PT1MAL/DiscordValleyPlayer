@@ -10,6 +10,7 @@ import os
 import shutil
 import sys
 import time
+import glob
 from threading import Lock
 from collections import defaultdict
 #from dotenv import load_dotenv
@@ -351,39 +352,42 @@ async def download_worker(guild_id):
 async def download_track(ctx, info, guild_id, connection):
     """Download a track and add it to the playback queue."""
     try:
-        with yt_dlp.YoutubeDL({
+        # Configure yt_dlp
+        ydl_opts = {
             'format': 'bestaudio[ext=m4a]/bestaudio/best',
             'paths': {'home': f'./dl/{guild_id}'},
             'outtmpl': '%(id)s.%(ext)s',
             'ignoreerrors': True,
-        }) as ydl:
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([info['webpage_url']])
-        
-        # Find the actual file without assuming extension
+
+        # Dynamically find the downloaded file
         video_id = info['id']
         base_path = f'./dl/{guild_id}/{video_id}'
-        
-        # Look for any file with this video ID
-        import glob
-        files = glob.glob(f"{base_path}.*")
-        if not files:
-            raise FileNotFoundError(f"No audio file found for {video_id}")
-        
-        actual_path = files[0]  # Take the first matching file
-        
+        downloaded_files = glob.glob(f"{base_path}.*")
+
+        if not downloaded_files:
+            raise FileNotFoundError(f"Downloaded file not found for {video_id}")
+
+        actual_path = downloaded_files[0]  # Use the first matching file
+
         if guild_id not in queues:
             queues[guild_id] = GuildQueue()
-        
+
         # Add to playback queue
         queues[guild_id].append((actual_path, info))
+
+        # Play immediately if no other track is playing
         if not connection.is_playing() and len(queues[guild_id]) == 1:
             connection.play(
                 discord.FFmpegOpusAudio(actual_path),
                 after=lambda error=None: after_track(error, connection, guild_id)
             )
-            
     except Exception as e:
-        raise e
+        await ctx.send(f"Failed to download or play track: {str(e)}")
+        raise
 
 async def cleanup_download_queue(guild_id):
     """Stop and clean up the download queue for a guild."""
