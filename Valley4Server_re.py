@@ -359,17 +359,29 @@ async def download_track(ctx, info, guild_id, connection):
         }) as ydl:
             ydl.download([info['webpage_url']])
         
-        path = f'./dl/{guild_id}/{info["id"]}.{info["ext"]}'
+        # Find the actual file without assuming extension
+        video_id = info['id']
+        base_path = f'./dl/{guild_id}/{video_id}'
+        
+        # Look for any file with this video ID
+        import glob
+        files = glob.glob(f"{base_path}.*")
+        if not files:
+            raise FileNotFoundError(f"No audio file found for {video_id}")
+        
+        actual_path = files[0]  # Take the first matching file
+        
         if guild_id not in queues:
             queues[guild_id] = GuildQueue()
         
         # Add to playback queue
-        queues[guild_id].append((path, info))
+        queues[guild_id].append((actual_path, info))
         if not connection.is_playing() and len(queues[guild_id]) == 1:
             connection.play(
-                discord.FFmpegOpusAudio(path),
+                discord.FFmpegOpusAudio(actual_path),
                 after=lambda error=None: after_track(error, connection, guild_id)
             )
+            
     except Exception as e:
         raise e
 
@@ -469,7 +481,7 @@ def after_track(error, connection, server_id):
         
     try:
         queue = queues[server_id]
-        path = queue.pop()[0]
+        path = queue.pop(0)[0]  # Changed from pop() to pop(0) for consistency
         
         # Thread-safe file cleanup
         with download_locks[server_id]:
@@ -485,15 +497,18 @@ def after_track(error, connection, server_id):
         # Play next track if available
         if queue:
             next_track = queue[0][0]
-            connection.play(
-                discord.FFmpegOpusAudio(next_track),
-                after=lambda error=None, connection=connection, server_id=server_id:
-                    after_track(error, connection, server_id)
-            )
+            try:
+                connection.play(
+                    discord.FFmpegOpusAudio(next_track),
+                    after=lambda error=None: after_track(error, connection, server_id)
+                )
+            except Exception as e:
+                print(f"Error playing next track: {e}")
         else:
             queues.pop(server_id)
             
-    except (IndexError, KeyError):
+    except (IndexError, KeyError) as e:
+        print(f"Queue error: {e}")
         # Queue is empty or guild was removed
         pass
 
