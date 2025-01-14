@@ -109,6 +109,7 @@ queues = ThreadSafeDict()  # {server_id: GuildQueue()}
 last_activity = ThreadSafeDict()  # {guild_id: timestamp}
 download_locks = defaultdict(Lock)  # {guild_id: Lock()}
 download_queues = ThreadSafeDict()  # {guild_id: asyncio.Queue()}
+download_queues = ThreadSafeDict()  # {guild_id: asyncio.Queue()}
 
 #load_dotenv()
 TOKEN = os.getenv('BOT_TOKEN')
@@ -225,7 +226,11 @@ async def play(ctx: commands.Context, *args):
     """Add track(s) to the download and playback queue."""
     query = ' '.join(args)
     server_id = ctx.guild.id
+    """Add track(s) to the download and playback queue."""
+    query = ' '.join(args)
+    server_id = ctx.guild.id
     voice_state = ctx.author.voice
+
 
     if not await sense_checks(ctx, voice_state=voice_state):
         return
@@ -245,7 +250,23 @@ async def play(ctx: commands.Context, *args):
                         await download_queues[server_id].put((entry, ctx, ctx.guild.voice_client))
             else:  # Single track
                 await download_queues[server_id].put((info, ctx, ctx.guild.voice_client))
+    if server_id not in download_queues:
+        download_queues[server_id] = asyncio.Queue()
+        bot.loop.create_task(download_worker(server_id))
+
+    try:
+        await ctx.send(f"Searching for `{query}`...")
+        with yt_dlp.YoutubeDL({'default_search': 'ytsearch', 'extract_flat': False}) as ydl:
+            info = ydl.extract_info(query, download=False)
+            if 'entries' in info:  # Playlist
+                await ctx.send(f"Found playlist with {len(info['entries'])} tracks")
+                for entry in info['entries']:
+                    if entry:
+                        await download_queues[server_id].put((entry, ctx, ctx.guild.voice_client))
+            else:  # Single track
+                await download_queues[server_id].put((info, ctx, ctx.guild.voice_client))
     except Exception as e:
+        await ctx.send(f"Error processing query: {str(e)}")
         await ctx.send(f"Error processing query: {str(e)}")
 
 async def process_playlist_tracks(ctx, ydl, entries, server_id, connection, will_need_search):
@@ -283,6 +304,50 @@ def after_track(error, connection, server_id):
         # Only disconnect if channel is empty
         if len([m for m in connection.channel.members if not m.bot]) == 0:
             asyncio.run_coroutine_threadsafe(safe_disconnect(connection), bot.loop).result()
+
+async def download_worker(guild_id):
+    """Worker to handle downloading for a specific guild."""
+    queue = download_queues[guild_id]
+    while True:
+        track_info, ctx, connection = await queue.get()  # Get the next track to download
+        if track_info is None:  # Sentinel value to stop the worker
+            break
+        try:
+            await download_track(ctx, track_info, guild_id, connection)
+        except Exception as e:
+            await ctx.send(f"Failed to download track: {str(e)}")
+        queue.task_done()
+
+async def download_track(ctx, info, guild_id, connection):
+    """Download a track and add it to the playback queue."""
+    try:
+        with yt_dlp.YoutubeDL({
+            'format': 'bestaudio[ext=m4a]/bestaudio/best',
+            'paths': {'home': f'./dl/{guild_id}'},
+            'outtmpl': '%(id)s.%(ext)s',
+            'ignoreerrors': True,
+        }) as ydl:
+            ydl.download([info['webpage_url']])
+        
+        path = f'./dl/{guild_id}/{info["id"]}.{info["ext"]}'
+        if guild_id not in queues:
+            queues[guild_id] = GuildQueue()
+        
+        # Add to playback queue
+        queues[guild_id].append((path, info))
+        if not connection.is_playing() and len(queues[guild_id]) == 1:
+            connection.play(
+                discord.FFmpegOpusAudio(path),
+                after=lambda error=None: after_track(error, connection, guild_id)
+            )
+    except Exception as e:
+        raise e
+
+async def cleanup_download_queue(guild_id):
+    """Stop and clean up the download queue for a guild."""
+    if guild_id in download_queues:
+        queue = download_queues.pop(guild_id)
+        await queue.put(None)
 
 async def download_worker(guild_id):
     """Worker to handle downloading for a specific guild."""
