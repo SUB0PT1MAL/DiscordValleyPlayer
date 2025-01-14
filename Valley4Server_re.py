@@ -236,20 +236,17 @@ async def play_single(ctx: commands.Context, *args):
 
     try:
         await ctx.send(f"Searching for `{query}`...")
-        ydl_opts = {
-            'extract_flat': False,
-            'default_search': 'ytsearch',
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL() as ydl:
             info = ydl.extract_info(query, download=False)
-            if 'entries' in info:
+            
+            if 'entries' in info:  # Playlist
                 entries = list(filter(None, info['entries']))
                 await ctx.send(f"Processing playlist: {len(entries)} tracks found")
                 for entry in entries:
                     await download_queues[server_id].put((entry, ctx, voice_client))
-                return
-            await download_queues[server_id].put((info, ctx, voice_client))
-
+            else:  # Single track
+                await download_queues[server_id].put((info, ctx, voice_client))
+                
     except Exception as e:
         await ctx.send(f"Error processing query: {str(e)}")
         
@@ -304,17 +301,15 @@ async def download_worker(guild_id):
 async def download_track(ctx, info, guild_id, connection):
     try:
         video_title = info.get('title', 'Unknown Title')
-        ydl_opts = {
+        webpage_url = info.get('webpage_url', info.get('url', ''))
+        
+        with yt_dlp.YoutubeDL({
             'format': 'bestaudio[ext=m4a]/bestaudio/best',
             'paths': {'home': f'./dl/{guild_id}'},
-            'outtmpl': '%(id)s.%(ext)s',
-            'quiet': True,
-            'no_warnings': True
-        }
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            'outtmpl': '%(id)s.%(ext)s'
+        }) as ydl:
             with download_locks[guild_id]:
-                ydl.download([info['url']])
+                ydl.download([webpage_url])
         
         video_id = info['id']
         downloaded_files = glob.glob(f"./dl/{guild_id}/{video_id}.*")
