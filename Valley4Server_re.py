@@ -221,16 +221,12 @@ async def skip(ctx: commands.Context, *args):
         queue.pop(0)
     voice_client.stop()
 
-@bot.command(name='valley', aliases=['v'])
+bot.command(name='valley', aliases=['v'])
 async def play(ctx: commands.Context, *args):
     """Add track(s) to the download and playback queue."""
     query = ' '.join(args)
     server_id = ctx.guild.id
-    """Add track(s) to the download and playback queue."""
-    query = ' '.join(args)
-    server_id = ctx.guild.id
     voice_state = ctx.author.voice
-
 
     if not await sense_checks(ctx, voice_state=voice_state):
         return
@@ -250,27 +246,7 @@ async def play(ctx: commands.Context, *args):
                         await download_queues[server_id].put((entry, ctx, ctx.guild.voice_client))
             else:  # Single track
                 await download_queues[server_id].put((info, ctx, ctx.guild.voice_client))
-    try:
-        if server_id not in download_queues:
-            download_queues[server_id] = asyncio.Queue()
-            bot.loop.create_task(process_download_queue(ctx, server_id))
     except Exception as e:
-        await ctx.send(f"An error occurred while adding to the download queue: {str(e)}")
-
-
-    try:
-        await ctx.send(f"Searching for `{query}`...")
-        with yt_dlp.YoutubeDL({'default_search': 'ytsearch', 'extract_flat': False}) as ydl:
-            info = ydl.extract_info(query, download=False)
-            if 'entries' in info:  # Playlist
-                await ctx.send(f"Found playlist with {len(info['entries'])} tracks")
-                for entry in info['entries']:
-                    if entry:
-                        await download_queues[server_id].put((entry, ctx, ctx.guild.voice_client))
-            else:  # Single track
-                await download_queues[server_id].put((info, ctx, ctx.guild.voice_client))
-    except Exception as e:
-        await ctx.send(f"Error processing query: {str(e)}")
         await ctx.send(f"Error processing query: {str(e)}")
 
 async def process_playlist_tracks(ctx, ydl, entries, server_id, connection, will_need_search):
