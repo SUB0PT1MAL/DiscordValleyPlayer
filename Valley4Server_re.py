@@ -231,6 +231,16 @@ async def play_single(ctx: commands.Context, *args):
     if not await sense_checks(ctx, voice_state=voice_state):
         return
 
+    # Connect to voice channel if not already connected
+    if not ctx.guild.voice_client:
+        try:
+            await voice_state.channel.connect()
+        except Exception as e:
+            await ctx.send(f"Could not connect to voice channel: {str(e)}")
+            return
+    
+    voice_client = ctx.guild.voice_client
+
     if server_id not in download_queues:
         download_queues[server_id] = asyncio.Queue()
         bot.loop.create_task(download_worker(server_id))
@@ -243,11 +253,11 @@ async def play_single(ctx: commands.Context, *args):
                 if info['entries']:
                     entry = info['entries'][0]
                     await ctx.send(f"Adding first track from playlist: `{entry.get('title', 'Unknown')}`")
-                    await download_queues[server_id].put((entry, ctx, ctx.guild.voice_client))
+                    await download_queues[server_id].put((entry, ctx, voice_client))
                 else:
                     await ctx.send("No valid tracks found in the playlist.")
             else:  # Single track
-                await download_queues[server_id].put((info, ctx, ctx.guild.voice_client))
+                await download_queues[server_id].put((info, ctx, voice_client))
     except Exception as e:
         await ctx.send(f"Error processing query: {str(e)}")
 
@@ -260,6 +270,16 @@ async def play_playlist(ctx: commands.Context, *args):
 
     if not await sense_checks(ctx, voice_state=voice_state):
         return
+
+    # Connect to voice channel if not already connected
+    if not ctx.guild.voice_client:
+        try:
+            await voice_state.channel.connect()
+        except Exception as e:
+            await ctx.send(f"Could not connect to voice channel: {str(e)}")
+            return
+    
+    voice_client = ctx.guild.voice_client
 
     if not ('youtube.com/playlist' in query or 'youtube.com/watch' in query):
         await ctx.send("Please provide a valid YouTube playlist URL.")
@@ -278,7 +298,7 @@ async def play_playlist(ctx: commands.Context, *args):
                     await ctx.send(f"Found playlist with {len(info['entries'])} tracks")
                     for entry in info['entries']:
                         if entry:
-                            await download_queues[server_id].put((entry, ctx, ctx.guild.voice_client))
+                            await download_queues[server_id].put((entry, ctx, voice_client))
                 else:
                     await ctx.send("No tracks found in the playlist.")
             else:
