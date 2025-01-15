@@ -225,9 +225,10 @@ async def handle_playlist(ctx: commands.Context, playlist_url: str):
     async def check_video_url(url):
         try:
             with yt_dlp.YoutubeDL({
-                "quiet": True,
+                "quiet": False,
+                "extract_flat": True,
+                "ignoreerrors": True,  # Allows skipping unavailable videos
                 "no_warnings": True,
-                "extract_flat": True
             }) as ydl:
                 # Run in executor to prevent blocking
                 info = await asyncio.get_event_loop().run_in_executor(
@@ -241,7 +242,7 @@ async def handle_playlist(ctx: commands.Context, playlist_url: str):
     try:
         # First get flat playlist data (just URLs, no details)
         with yt_dlp.YoutubeDL({
-            "quiet": True,
+            "quiet": False,
             "extract_flat": True,
             "ignore_errors": True,
             "no_warnings": True
@@ -346,7 +347,7 @@ async def play_single(ctx: commands.Context, *args):
 
         if is_url:
             # Quick check if it's a playlist
-            with yt_dlp.YoutubeDL({"quiet": True, "extract_flat": True}) as ydl:
+            with yt_dlp.YoutubeDL({"quiet": False, "extract_flat": True}) as ydl:
                 try:
                     info = ydl.extract_info(query, download=False)
                     
@@ -373,9 +374,9 @@ async def process_single_video(ctx, query, server_id):
         # Handle search if not URL
         if not (query.startswith("http://") or query.startswith("https://")):
             await ctx.send(f"Searching YouTube for `{query}`...")
-            query = f"ytsearch1:{query}"
+            query = f"ytsearch:{query}"
 
-        with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+        with yt_dlp.YoutubeDL({"quiet": False}) as ydl:
             info = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: ydl.extract_info(query, download=False)
