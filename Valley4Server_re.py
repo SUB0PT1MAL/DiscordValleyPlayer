@@ -213,6 +213,113 @@ async def skip(ctx: commands.Context, *args):
     voice_client.stop()
 
 @bot.command(name='valley', aliases=['v'])
+async def handle_playlist(ctx: commands.Context, playlist_url: str):
+    """
+    Completely isolated playlist handler that safely extracts working URLs.
+    Returns valid URLs to be processed by the main bot functions.
+    """
+    server_id = ctx.guild.id
+    voice_client = ctx.guild.voice_client
+    
+    # Function to safely check if a video URL is valid
+    async def check_video_url(url):
+        try:
+            with yt_dlp.YoutubeDL({
+                "quiet": True,
+                "no_warnings": True,
+                "extract_flat": True
+            }) as ydl:
+                # Run in executor to prevent blocking
+                info = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: ydl.extract_info(url, download=False)
+                )
+                return info if info else None
+        except:
+            return None
+
+    try:
+        # First get flat playlist data (just URLs, no details)
+        with yt_dlp.YoutubeDL({
+            "quiet": True,
+            "extract_flat": True,
+            "ignore_errors": True,
+            "no_warnings": True
+        }) as ydl:
+            try:
+                playlist_info = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: ydl.extract_info(playlist_url, download=False)
+                )
+            except Exception as e:
+                await ctx.send(f"Could not access playlist: {str(e)}")
+                return
+
+            if not playlist_info or "entries" not in playlist_info:
+                await ctx.send("Could not process playlist.")
+                return
+
+            # Filter out None entries and get URLs
+            entries = [e for e in playlist_info.get("entries", []) if e and e.get("url")]
+            if not entries:
+                await ctx.send("No valid entries found in playlist.")
+                return
+
+            total_tracks = len(entries)
+            await ctx.send(f"Found {total_tracks} tracks. Checking availability...")
+
+            valid_tracks = 0
+            processed = 0
+
+            # Process entries in smaller chunks to avoid overwhelming the system
+            chunk_size = 5
+            for i in range(0, len(entries), chunk_size):
+                chunk = entries[i:i + chunk_size]
+                
+                # Check all URLs in chunk concurrently
+                tasks = [check_video_url(entry["url"]) for entry in chunk]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                # Process results
+                for entry, result in zip(chunk, results):
+                    processed += 1
+                    
+                    if isinstance(result, Exception) or not result:
+                        continue
+                        
+                    try:
+                        # Add to download queue
+                        await download_queues[server_id].put((result, ctx, voice_client))
+                        valid_tracks += 1
+                        
+                        # Give feedback every few tracks
+                        if valid_tracks % 5 == 0:
+                            await ctx.send(f"Progress: Added {valid_tracks} valid tracks to queue...")
+                            
+                    except Exception as e:
+                        print(f"Error adding track to queue: {e}")
+                        continue
+
+                # Small delay between chunks to prevent rate limiting
+                await asyncio.sleep(1)
+                
+                # Progress update
+                if processed % 10 == 0:
+                    await ctx.send(f"Processed {processed}/{total_tracks} tracks...")
+
+            # Final status update
+            await ctx.send(
+                f"Playlist processing complete:\n"
+                f"- {valid_tracks} tracks added to queue\n"
+                f"- {total_tracks - valid_tracks} tracks skipped (unavailable)"
+            )
+
+    except Exception as e:
+        await ctx.send(f"Error in playlist handler: {str(e)}")
+        print(f"Playlist handler error: {e}")
+        # Even if we error out, the main bot functionality remains unaffected
+
+# Modify play_single to use the isolated playlist handler
 async def play_single(ctx: commands.Context, *args):
     query = ' '.join(args)
     server_id = ctx.guild.id
@@ -228,8 +335,7 @@ async def play_single(ctx: commands.Context, *args):
             await ctx.send(f"Could not connect to voice channel: {str(e)}")
             return
 
-    voice_client = ctx.guild.voice_client
-
+    # Initialize download queue if needed
     if server_id not in download_queues:
         download_queues[server_id] = asyncio.Queue()
         bot.loop.create_task(download_worker(server_id))
@@ -239,177 +345,53 @@ async def play_single(ctx: commands.Context, *args):
         is_url = query.startswith("http://") or query.startswith("https://")
 
         if is_url:
-            try:
-                with yt_dlp.YoutubeDL({
-                    "quiet": True,
-                    "extract_flat": True,
-                    "ignore_errors": True
-                }) as ydl:
-                    initial_info = ydl.extract_info(query, download=False)
+            # Quick check if it's a playlist
+            with yt_dlp.YoutubeDL({"quiet": True, "extract_flat": True}) as ydl:
+                try:
+                    info = ydl.extract_info(query, download=False)
+                    
+                    # If it's a playlist, handle it separately
+                    if info and "entries" in info:
+                        await ctx.send("Playlist detected, starting playlist processor...")
+                        # Start playlist handler in a separate task
+                        bot.loop.create_task(handle_playlist(ctx, query))
+                        return
+                        
+                except Exception:
+                    # If initial check fails, try as a single video
+                    pass
 
-                if not initial_info:
-                    await ctx.send("Could not extract video information.")
-                    return
-
-                # Handle playlist URLs
-                if "entries" in initial_info:  # Playlist detected
-                    await ctx.send(f"Processing playlist: `{query}`...")
-                    bot.loop.create_task(playlists_worker(ctx, query, server_id, voice_client))
-                    return
-                else:  # Single video URL
-                    # Get detailed info for single video
-                    with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
-                        try:
-                            info = ydl.extract_info(query, download=False)
-                            if info:
-                                await download_queues[server_id].put((info, ctx, voice_client))
-                                await ctx.send(f"Added `{info['title']}` to the queue.")
-                            else:
-                                await ctx.send("This video is unavailable.")
-                        except Exception as e:
-                            await ctx.send(f"Error processing video: {str(e)}")
-                            return
-
-            except Exception as e:
-                await ctx.send(f"Error processing URL: {str(e)}")
-                return
-
-        else:  # Treat as a search query
-            await ctx.send(f"Searching YouTube for `{query}`...")
-            try:
-                with yt_dlp.YoutubeDL({
-                    "quiet": True,
-                    "default_search": "ytsearch1",
-                    "ignore_errors": True
-                }) as ydl:
-                    search_result = ydl.extract_info(query, download=False)
-
-                    if "entries" in search_result and search_result["entries"]:
-                        info = search_result["entries"][0]  # Get the first search result
-                        if info:
-                            await download_queues[server_id].put((info, ctx, voice_client))
-                            await ctx.send(f"Added `{info['title']}` to the queue.")
-                        else:
-                            await ctx.send("No results found.")
-                    else:
-                        await ctx.send("No results found.")
-            except Exception as e:
-                await ctx.send(f"Error searching: {str(e)}")
-                return
+        # Handle single video (URL or search)
+        await process_single_video(ctx, query, server_id)
 
     except Exception as e:
         await ctx.send(f"Error processing query: {str(e)}")
 
-async def playlists_worker(ctx: commands.Context, playlist_url: str, server_id: int, voice_client):
-    """Process playlist videos with improved error handling and progress updates"""
+async def process_single_video(ctx, query, server_id):
+    """Helper function to process single videos"""
     try:
-        # Initial playlist info extraction with minimal data
-        with yt_dlp.YoutubeDL({
-            "quiet": True,
-            "extract_flat": True,
-            "ignore_errors": True,
-            "no_warnings": True
-        }) as ydl:
-            try:
-                playlist_info = ydl.extract_info(playlist_url, download=False)
-            except Exception as e:
-                await ctx.send(f"Error accessing playlist: {str(e)}")
-                return
+        # Handle search if not URL
+        if not (query.startswith("http://") or query.startswith("https://")):
+            await ctx.send(f"Searching YouTube for `{query}`...")
+            query = f"ytsearch1:{query}"
 
-            if not playlist_info or "entries" not in playlist_info or not playlist_info["entries"]:
-                await ctx.send("The playlist is empty or could not be processed.")
-                return
-
-            entries = [e for e in playlist_info["entries"] if e is not None]
-            total_tracks = len(entries)
-            valid_tracks = 0
-            skipped_tracks = 0
-
-            await ctx.send(f"Found {total_tracks} tracks. Processing playlist...")
-
-            # Process each track with error handling
-            for entry in entries:
-                try:
-                    # Extract detailed info for each track
-                    with yt_dlp.YoutubeDL({
-                        "quiet": True,
-                        "ignore_errors": True,
-                        "no_warnings": True
-                    }) as ydl_detail:
-                        try:
-                            video_info = await asyncio.get_event_loop().run_in_executor(
-                                None,
-                                lambda: ydl_detail.extract_info(entry["url"], download=False)
-                            )
-                            
-                            if video_info:
-                                await download_queues[server_id].put((video_info, ctx, voice_client))
-                                valid_tracks += 1
-
-                                # Periodic progress updates
-                                if valid_tracks % 5 == 0:
-                                    await ctx.send(f"Progress: Added {valid_tracks} tracks to queue...")
-                            else:
-                                skipped_tracks += 1
-
-                        except Exception as e:
-                            skipped_tracks += 1
-                            if "copyright" in str(e).lower() or "unavailable" in str(e).lower():
-                                print(f"Skipping blocked/unavailable track: {entry.get('title', 'Unknown')}")
-                            continue
-
-                except Exception as e:
-                    skipped_tracks += 1
-                    print(f"Error processing playlist entry: {e}")
-                    continue
-
-                # Add small delay to avoid rate limiting
-                await asyncio.sleep(0.5)
-
-            # Final status update
-            status = f"Playlist processing complete:\n- {valid_tracks} tracks added to queue"
-            if skipped_tracks:
-                status += f"\n- {skipped_tracks} tracks skipped (unavailable/blocked)"
-            await ctx.send(status)
-
-    except Exception as e:
-        await ctx.send(f"Error processing playlist: {str(e)}")
-        print(f"Playlist processing error: {e}")
-
-def get_voice_client_from_channel_id(channel_id: int):
-    for voice_client in bot.voice_clients:
-        if voice_client.channel.id == channel_id:
-            return voice_client
-
-async def after_track(error, connection, guild_id):
-    """Streamlined track completion handler"""
-    if error:
-        print(f"Playback error in guild {guild_id}: {error}")
-        return
-        
-    try:
-        queue = queues[guild_id]
-        path = queue.pop(0)[0]
-        
-        # Cleanup file if not needed
-        with download_locks[guild_id]:
-            if not any(path == track[0] for track in queue):
-                try: os.remove(path)
-                except FileNotFoundError: pass
-        
-        last_activity[guild_id] = time.time()
-        
-        # Play next or cleanup
-        if queue:
-            connection.play(
-                discord.FFmpegOpusAudio(queue[0][0]),
-                after=lambda error=None: after_track(error, connection, guild_id)
+        with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+            info = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: ydl.extract_info(query, download=False)
             )
-        else:
-            await safe_cleanup(guild_id)
             
+            if info:
+                if "entries" in info:
+                    info = info["entries"][0]
+                
+                await download_queues[server_id].put((info, ctx, ctx.guild.voice_client))
+                await ctx.send(f"Added `{info['title']}` to the queue.")
+            else:
+                await ctx.send("Could not find video.")
+
     except Exception as e:
-        print(f"Queue handling error: {e}")
+        await ctx.send(f"Error processing video: {str(e)}")
 
 async def download_worker(guild_id):
     queue = download_queues[guild_id]
