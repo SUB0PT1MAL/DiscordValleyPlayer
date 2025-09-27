@@ -378,15 +378,12 @@ async def download_track(ctx, info, guild_id, connection):
             'paths': {'home': f'./dl/{guild_id}'},
             'outtmpl': '%(id)s.%(ext)s',
             'ignoreerrors': True,
-            'merge_output_format': 'm4a',             # merge fragments
-            'postprocessors': [{
-                'key': 'FFmpegAudioConvertor',        # ensure output is m4a
-                'preferredcodec': 'm4a'
-            }],
+            'merge_output_format': 'm4a',     # merge HLS/DASH fragments
+            'postprocessors': [],              # remove FFmpegAudioConvertor/ExtractAudio
             'extractor_args': {
                 'youtube': {
-                    'player-client': ['mweb'],       # mobile web client
-                    'formats': ['sabr'],             # allow SABR/HLS formats
+                    'player-client': ['mweb'],
+                    'formats': ['sabr'],       # accept SABR-only streams
                 }
             },
             'concurrent_fragment_downloads': 3,
