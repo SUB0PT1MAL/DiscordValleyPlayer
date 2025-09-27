@@ -382,7 +382,7 @@ async def download_track(ctx, info, guild_id, connection):
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'm4a'
-            }]
+            }],
             'extractor_args': {
                 'youtube': {
                     'player-client': ['mweb'],
