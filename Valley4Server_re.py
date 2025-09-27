@@ -318,12 +318,12 @@ async def download_worker(guild_id):
             print(f"Download worker error: {e}")
             continue
 
-async def download_track(ctx, info, guild_id, connection):
-    try:
-        video_title = info.get('title', 'Unknown Title')
-        webpage_url = info.get('webpage_url', info.get('url', ''))
-        
-        async def download_with_timeout():
+#async def download_track(ctx, info, guild_id, connection):
+#    try:
+#        video_title = info.get('title', 'Unknown Title')
+#        webpage_url = info.get('webpage_url', info.get('url', ''))
+#        
+#        async def download_with_timeout():
 #            with yt_dlp.YoutubeDL({
 #                'format': 'bestaudio[ext=m4a]/bestaudio/best',
 #                'paths': {'home': f'./dl/{guild_id}'},
@@ -334,37 +334,76 @@ async def download_track(ctx, info, guild_id, connection):
 #                    return await asyncio.get_event_loop().run_in_executor(
 #                        None, ydl.download, [webpage_url]
 #                    )
+#
+#        try:
+#            await asyncio.wait_for(download_with_timeout(), timeout=60)
+#        except asyncio.TimeoutError:
+#            raise Exception("Download timed out")
+#
+#        video_id = info['id']
+#        downloaded_files = glob.glob(f"./dl/{guild_id}/{video_id}.*")
+#        if not downloaded_files:
+#            raise FileNotFoundError(f"Download failed for {video_title}")
+#            
+#        path = downloaded_files[0]
+#        
+#        if guild_id not in queues:
+#            queues[guild_id] = GuildQueue()
+#        
+#        queue = queues[guild_id]
+#        queue.append((path, info))
+#        if not connection.is_playing() and len(queue) == 1:
+#            connection.play(
+#                discord.FFmpegOpusAudio(path),
+#                after=lambda error=None: after_track(error, connection, guild_id)
+#            )
+#            last_activity[guild_id] = time.time()
+#            
+#    except Exception as e:
+#        raise e
+#    return True
 
-            ydl_opts = {
-                # Pick best audio, even if it’s HLS/DASH
-                'format': 'bestaudio/best',
-                'paths': {'home': f'./dl/{guild_id}'},
-                'outtmpl': '%(id)s.%(ext)s',
-                'noplaylist': True,
-                'ignoreerrors': True,
-                'merge_output_format': 'm4a',     # force ffmpeg to merge fragments
-                'postprocessors': [{              # normalize everything into m4a
-                    'key': 'FFmpegAudioConvertor',
-                    'preferredcodec': 'm4a'
-                }],
-                'extractor_args': {
-                    'youtube': {
-                        'player-client': ['mweb'],  # mobile web client
-                        'formats': ['sabr'],        # accept SABR formats
-                    }
-                },
-                'concurrent_fragment_downloads': 3,  # speed up HLS/DASH downloads
-            }
-            
-            async def download_with_timeout():
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    with download_locks[guild_id]:
-                        return await asyncio.get_event_loop().run_in_executor(
-                            None, ydl.download, [webpage_url]
-                        )
-                        
+async def download_track(ctx, info, guild_id, connection):
+    """
+    Downloads a YouTube audio track, handling SABR/HLS streams,
+    merges fragments into a single .m4a file, and adds it to the guild queue.
+    """
+    try:
+        video_title = info.get('title', 'Unknown Title')
+        webpage_url = info.get('webpage_url', info.get('url', ''))
+
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'noplaylist': True,
+            'paths': {'home': f'./dl/{guild_id}'},
+            'outtmpl': '%(id)s.%(ext)s',
+            'ignoreerrors': True,
+            'merge_output_format': 'm4a',             # merge fragments
+            'postprocessors': [{
+                'key': 'FFmpegAudioConvertor',        # ensure output is m4a
+                'preferredcodec': 'm4a'
+            }],
+            'extractor_args': {
+                'youtube': {
+                    'player-client': ['mweb'],       # mobile web client
+                    'formats': ['sabr'],             # allow SABR/HLS formats
+                }
+            },
+            'concurrent_fragment_downloads': 3,
+            'fragment_retries': 5,
+            'socket_timeout': 30,
+            'quiet': True,
+        }
+
+        async def download_with_timeout():
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                with download_locks[guild_id]:
+                    return await asyncio.get_event_loop().run_in_executor(
+                        None, ydl.download, [webpage_url]
+                    )
+
         try:
-            await asyncio.wait_for(download_with_timeout(), timeout=60)
+            await asyncio.wait_for(download_with_timeout(), timeout=120)
         except asyncio.TimeoutError:
             raise Exception("Download timed out")
 
@@ -372,24 +411,27 @@ async def download_track(ctx, info, guild_id, connection):
         downloaded_files = glob.glob(f"./dl/{guild_id}/{video_id}.*")
         if not downloaded_files:
             raise FileNotFoundError(f"Download failed for {video_title}")
-            
         path = downloaded_files[0]
-        
+
         if guild_id not in queues:
             queues[guild_id] = GuildQueue()
-        
         queue = queues[guild_id]
         queue.append((path, info))
+
         if not connection.is_playing() and len(queue) == 1:
             connection.play(
-                discord.FFmpegOpusAudio(path),
+                discord.FFmpegOpusAudio(
+                    path,
+                    before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+                ),
                 after=lambda error=None: after_track(error, connection, guild_id)
             )
             last_activity[guild_id] = time.time()
-            
+
     except Exception as e:
-        raise e
-    return True
+        await ctx.send(f"⚠️ Could not download `{video_title}`: {str(e)}")
+        print(f"Download error: {e}")
+
 
 async def safe_cleanup(guild_id, voice_client=None):
     """Centralized cleanup function"""
