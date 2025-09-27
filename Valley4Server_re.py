@@ -329,24 +329,35 @@ async def download_track(ctx, info, guild_id, connection):
 #                'paths': {'home': f'./dl/{guild_id}'},
 #                'outtmpl': '%(id)s.%(ext)s'
 #            }) as ydl:
+#            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+#                with download_locks[guild_id]:
+#                    return await asyncio.get_event_loop().run_in_executor(
+#                        None, ydl.download, [webpage_url]
+#                    )
+
             ydl_opts = {
-                'format': 'bestaudio[ext=m4a]/bestaudio/best',
+                # Allow HLS/DASH/SABR instead of skipping
+                'format': 'bestaudio/best',
                 'paths': {'home': f'./dl/{guild_id}'},
                 'outtmpl': '%(id)s.%(ext)s',
+                'noplaylist': True,
+                'ignoreerrors': True,
                 'extractor_args': {
                     'youtube': {
-                        'player-client': ['mweb'],  # mobile web client still gets usable URLs
+                        'player-client': ['mweb'],  # mobile web client
                         'formats': ['sabr'],        # allow SABR formats
                     }
-                }
+                },
+                # Force ffmpeg to merge fragments
+                'merge_output_format': 'm4a',
             }
+            
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-
                 with download_locks[guild_id]:
                     return await asyncio.get_event_loop().run_in_executor(
                         None, ydl.download, [webpage_url]
                     )
-                    
+        
         try:
             await asyncio.wait_for(download_with_timeout(), timeout=60)
         except asyncio.TimeoutError:
