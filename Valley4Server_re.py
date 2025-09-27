@@ -379,7 +379,10 @@ async def download_track(ctx, info, guild_id, connection):
             'outtmpl': '%(id)s.%(ext)s',
             'ignoreerrors': True,
             'merge_output_format': 'm4a',     # merge HLS/DASH fragments
-            'postprocessors': [],              # remove FFmpegAudioConvertor/ExtractAudio
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'm4a'
+            }]
             'extractor_args': {
                 'youtube': {
                     'player-client': ['mweb'],
