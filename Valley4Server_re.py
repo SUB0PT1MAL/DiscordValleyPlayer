@@ -336,28 +336,33 @@ async def download_track(ctx, info, guild_id, connection):
 #                    )
 
             ydl_opts = {
-                # Allow HLS/DASH/SABR instead of skipping
+                # Pick best audio, even if it’s HLS/DASH
                 'format': 'bestaudio/best',
                 'paths': {'home': f'./dl/{guild_id}'},
                 'outtmpl': '%(id)s.%(ext)s',
                 'noplaylist': True,
                 'ignoreerrors': True,
+                'merge_output_format': 'm4a',     # force ffmpeg to merge fragments
+                'postprocessors': [{              # normalize everything into m4a
+                    'key': 'FFmpegAudioConvertor',
+                    'preferredcodec': 'm4a'
+                }],
                 'extractor_args': {
                     'youtube': {
                         'player-client': ['mweb'],  # mobile web client
-                        'formats': ['sabr'],        # allow SABR formats
+                        'formats': ['sabr'],        # accept SABR formats
                     }
                 },
-                # Force ffmpeg to merge fragments
-                'merge_output_format': 'm4a',
+                'concurrent_fragment_downloads': 3,  # speed up HLS/DASH downloads
             }
             
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                with download_locks[guild_id]:
-                    return await asyncio.get_event_loop().run_in_executor(
-                        None, ydl.download, [webpage_url]
-                    )
-        
+            async def download_with_timeout():
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    with download_locks[guild_id]:
+                        return await asyncio.get_event_loop().run_in_executor(
+                            None, ydl.download, [webpage_url]
+                        )
+                        
         try:
             await asyncio.wait_for(download_with_timeout(), timeout=60)
         except asyncio.TimeoutError:
