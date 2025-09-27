@@ -1,2 +1,2 @@
 discord.py
-yt_dlp
+yt_dlp --pre
