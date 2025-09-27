@@ -9,7 +9,7 @@ RUN apk add --no-cache ffmpeg opus-dev gcc musl-dev python3-dev libffi-dev
 #COPY requirements.txt .
 COPY Valley4Server_re.py bot.py
 
-RUN pip install --no-cache-dir yt-dlp --pre
+RUN pip install --no-cache-dir -U --pre yt-dlp
 RUN pip install --no-cache-dir discord.py
 RUN pip install --no-cache-dir PyNaCl
 
