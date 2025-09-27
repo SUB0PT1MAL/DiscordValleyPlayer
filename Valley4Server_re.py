@@ -330,10 +330,10 @@ async def download_track(ctx, info, guild_id, connection):
                 'outtmpl': '%(id)s.%(ext)s'
             }) as ydl:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                with download_locks[guild_id]:
-                    return await asyncio.get_event_loop().run_in_executor(
-                        None, ydl.download, [webpage_url]
-                    )
+                    with download_locks[guild_id]:
+                        return await asyncio.get_event_loop().run_in_executor(
+                            None, ydl.download, [webpage_url]
+                        )
 
         try:
             await asyncio.wait_for(download_with_timeout(), timeout=60)
