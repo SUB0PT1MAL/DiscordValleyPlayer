@@ -324,11 +324,24 @@ async def download_track(ctx, info, guild_id, connection):
         webpage_url = info.get('webpage_url', info.get('url', ''))
         
         async def download_with_timeout():
-            with yt_dlp.YoutubeDL({
+#            with yt_dlp.YoutubeDL({
+#                'format': 'bestaudio[ext=m4a]/bestaudio/best',
+#                'paths': {'home': f'./dl/{guild_id}'},
+#                'outtmpl': '%(id)s.%(ext)s'
+#            }) as ydl:
+            ydl_opts = {
                 'format': 'bestaudio[ext=m4a]/bestaudio/best',
                 'paths': {'home': f'./dl/{guild_id}'},
-                'outtmpl': '%(id)s.%(ext)s'
-            }) as ydl:
+                'outtmpl': '%(id)s.%(ext)s',
+                'extractor_args': {
+                    'youtube': {
+                        'player-client': ['mweb'],  # mobile web client still gets usable URLs
+                        'formats': ['sabr'],        # allow SABR formats
+                    }
+                }
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+
                 with download_locks[guild_id]:
                     return await asyncio.get_event_loop().run_in_executor(
                         None, ydl.download, [webpage_url]
